@@ -1,11 +1,49 @@
 {
   "version": 4,
   "targets": {
-    "net10.0": {}
+    "net10.0": {
+      "Hyperion.Config/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v10.0",
+        "compile": {
+          "bin/placeholder/Hyperion.Config.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/Hyperion.Config.dll": {}
+        }
+      },
+      "Hyperion.Protocol/1.0.0": {
+        "type": "project",
+        "framework": ".NETCoreApp,Version=v10.0",
+        "dependencies": {
+          "Hyperion.Config": "1.0.0"
+        },
+        "compile": {
+          "bin/placeholder/Hyperion.Protocol.dll": {}
+        },
+        "runtime": {
+          "bin/placeholder/Hyperion.Protocol.dll": {}
+        }
+      }
+    }
   },
-  "libraries": {},
+  "libraries": {
+    "Hyperion.Config/1.0.0": {
+      "type": "project",
+      "path": "../Hyperion.Config/Hyperion.Config.csproj",
+      "msbuildProject": "../Hyperion.Config/Hyperion.Config.csproj"
+    },
+    "Hyperion.Protocol/1.0.0": {
+      "type": "project",
+      "path": "../Hyperion.Protocol/Hyperion.Protocol.csproj",
+      "msbuildProject": "../Hyperion.Protocol/Hyperion.Protocol.csproj"
+    }
+  },
   "projectFileDependencyGroups": {
-    "net10.0": []
+    "net10.0": [
+      "Hyperion.Config >= 1.0.0",
+      "Hyperion.Protocol >= 1.0.0"
+    ]
   },
   "packageFolders": {
     "C:\\Users\\ADMIN\\.nuget\\packages\\": {},
@@ -39,7 +77,14 @@
         "net10.0": {
           "framework": "net10.0",
           "targetAlias": "net10.0",
-          "projectReferences": {}
+          "projectReferences": {
+            "D:\\TAI\\Code\\redis-c#\\redis_build\\src\\Hyperion.Config\\Hyperion.Config.csproj": {
+              "projectPath": "D:\\TAI\\Code\\redis-c#\\redis_build\\src\\Hyperion.Config\\Hyperion.Config.csproj"
+            },
+            "D:\\TAI\\Code\\redis-c#\\redis_build\\src\\Hyperion.Protocol\\Hyperion.Protocol.csproj": {
+              "projectPath": "D:\\TAI\\Code\\redis-c#\\redis_build\\src\\Hyperion.Protocol\\Hyperion.Protocol.csproj"
+            }
+          }
         }
       },
       "warningProperties": {

@@ -8,5 +8,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Hyperion.Protocol.Tests/Hyperion.Protocol.Tests.csproj" />
+    <Project Path="tests/Hyperion.Server.Tests/Hyperion.Server.Tests.csproj" />
   </Folder>
 </Solution>
