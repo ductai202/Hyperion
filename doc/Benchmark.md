@@ -2,18 +2,39 @@
 
 ## Environment
 
+### Machine
 | Property | Value |
 |---|---|
-| **OS** | Windows 11 |
+| **CPU** | Intel Core i5-1135G7 @ 2.40GHz (11th Gen) |
+| **Physical Cores** | 4 |
+| **Logical Cores (HT)** | 8 |
+| **RAM** | ~40 GB |
+| **OS** | Windows 11 Pro |
 | **Runtime** | .NET 10 (Preview) |
 | **Build** | Release |
-| **Tool** | `redis-benchmark` (Redis for Windows v5.0.14.1) |
-| **Connections** | 500 concurrent clients |
-| **Requests** | 1,000,000 per command |
-| **Key space** | 1,000,000 unique keys |
-| **Payload** | 3 bytes (default) |
+
+### Hyperion Thread Configuration (Multi-Thread Mode)
+Hyperion automatically derives its thread layout from `Environment.ProcessorCount` (= 8 on this machine):
+
+| Thread Pool | Count | Formula |
+|---|---|---|
+| **IO Handler threads** | 4 | `ProcessorCount / 2` |
+| **Worker threads** | 4 | `ProcessorCount / 2` |
+| **Total threads** | 8 | matching logical core count |
+
+Each Worker owns a **private Storage shard**. Keys are consistently routed to the same worker via FNV-1a hash, so no locking is ever needed.
 
 ## Benchmark Commands
+
+**Tool:** `redis-benchmark` (Redis for Windows v5.0.14.1)
+
+| Parameter | Value |
+|---|---|
+| Concurrent clients (`-c`) | 500 |
+| Total requests (`-n`) | 1,000,000 |
+| Key space (`-r`) | 1,000,000 unique keys |
+| Payload | 3 bytes (default) |
+| Keep-alive | Yes |
 
 ```bash
 redis-benchmark -p 3000 -t set,get -c 500 -n 1000000 -r 1000000 -q
