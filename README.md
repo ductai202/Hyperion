@@ -115,7 +115,11 @@ flowchart TD
     style SN fill:#bfb,stroke:#333
 ```
 
-On a machine with 8 logical cores, Hyperion spins up 4 IO handlers + 4 workers. Since a given key always maps to the same worker via FNV-1a hashing, the storage shards are completely isolated. No mutexes, no spinlocks, no contention.
+On a machine with 8 logical cores, Hyperion spins up 4 IO handlers + 4 workers. Since a given key always maps to the same worker via **FNV-1a hashing**, the storage shards are completely isolated. 
+
+We chose **FNV-1a (Fowler-Noll-Vo)** as our partitioning hash because it is a non-cryptographic algorithm that is exceptionally fast and provides high dispersion for short strings (the most common type of Redis keys). This ensures that traffic is balanced evenly across all worker shards with minimal computational overhead, which is critical for maintaining sub-millisecond latencies.
+
+No mutexes, no spinlocks, no contention.
 
 ---
 

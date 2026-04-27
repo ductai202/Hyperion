@@ -82,6 +82,18 @@ public sealed class HyperionServer
         return Random.Shared.Next(_numWorkers);
     }
 
+    /// <summary>
+    /// Implements the FNV-1a (Fowler-Noll-Vo) hash algorithm.
+    /// 
+    /// Why FNV-1a?
+    /// 1. Speed: It is a non-cryptographic hash that is extremely fast, making it ideal for 
+    ///    the hot path of a high-performance database.
+    /// 2. Distribution: It provides excellent distribution for short strings (common for Redis keys),
+    ///    ensuring even load balancing across worker shards.
+    /// 3. Simplicity: The algorithm is small and requires no complex look-up tables or external dependencies.
+    /// 4. Share-Nothing: It provides the deterministic routing required to ensure a key 
+    ///    always maps to the same worker thread without cross-thread coordination.
+    /// </summary>
     private static uint Fnv1aHash(string key)
     {
         const uint fnvPrime = 16777619;
