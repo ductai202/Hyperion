@@ -74,8 +74,23 @@ public class StringCommands
     public byte[] Info(string[] args)
     {
         var sb = new StringBuilder();
-        sb.Append("# Keyspace\r\n");
-        sb.Append($"db0:keys={Stats.HashKeySpaceStat.Key},expires=0,avg_ttl=0\r\n");
+        
+        sb.Append("# Server\r\n");
+        sb.Append("redis_version:7.0.0-hyperion\r\n");
+        sb.Append($"os:{Environment.OSVersion}\r\n");
+        sb.Append($"process_id:{Environment.ProcessId}\r\n");
+        sb.Append($"uptime_in_seconds:{(long)(DateTimeOffset.UtcNow - Stats.ServerStartTime).TotalSeconds}\r\n");
+        sb.Append($"arch_bits:{(Environment.Is64BitProcess ? 64 : 32)}\r\n");
+
+        sb.Append("\r\n# Memory\r\n");
+        long usedMemory = GC.GetTotalMemory(false);
+        sb.Append($"used_memory:{usedMemory}\r\n");
+        sb.Append($"used_memory_human:{usedMemory / 1024.0 / 1024.0:F2}M\r\n");
+        sb.Append($"used_memory_peak:{usedMemory}\r\n"); // Simplified
+
+        sb.Append("\r\n# Keyspace\r\n");
+        sb.Append($"db0:keys={Stats.HashKeySpaceStat.Key},expires={Stats.HashKeySpaceStat.Expires},avg_ttl=0\r\n");
+
         return RespEncoder.Encode(sb.ToString(), isSimpleString: false);
     }
 

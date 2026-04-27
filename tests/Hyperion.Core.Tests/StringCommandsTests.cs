@@ -87,4 +87,14 @@ public class StringCommandsTests
         var decrRes = ExecuteStringCommand("DECR", "counter");
         Assert.Equal(":10\r\n", decrRes);
     }
+
+    [Fact]
+    public void Info_ShouldReturnServerInfo()
+    {
+        var infoRes = ExecuteStringCommand("INFO");
+        Assert.Contains("# Server", infoRes);
+        Assert.Contains("redis_version:7.0.0-hyperion", infoRes);
+        Assert.Contains("# Memory", infoRes);
+        Assert.Contains("# Keyspace", infoRes);
+    }
 }

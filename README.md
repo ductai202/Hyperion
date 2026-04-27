@@ -26,7 +26,7 @@ Hyperion speaks standard RESP2, so you can connect with any `redis-cli` or Redis
 
 | Category | Commands |
 |---|---|
-| Connection | `PING` |
+| Connection | `PING`, `INFO` |
 | String | `SET`, `GET`, `DEL`, `TTL`, `INCR`, `DECR` |
 | Hash | `HSET`, `HGET`, `HDEL`, `HGETALL` |
 | List | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE` |

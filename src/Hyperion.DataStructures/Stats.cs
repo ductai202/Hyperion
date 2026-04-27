@@ -5,6 +5,8 @@ namespace Hyperion.DataStructures;
 /// </summary>
 public static class Stats
 {
+    public static DateTimeOffset ServerStartTime { get; } = DateTimeOffset.UtcNow;
+
     public static class HashKeySpaceStat
     {
         public static long Key { get; set; } = 0;
