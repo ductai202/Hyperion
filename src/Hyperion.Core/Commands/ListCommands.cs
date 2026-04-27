@@ -22,15 +22,12 @@ public class ListCommands
         var list = _storage.ListStore.GetOrAdd(key, _ => new LinkedList<string>());
         int count = 0;
         
-        lock (list)
+        for (int i = 1; i < args.Length; i++)
         {
-            for (int i = 1; i < args.Length; i++)
-            {
-                if (left) list.AddFirst(args[i]);
-                else list.AddLast(args[i]);
-            }
-            count = list.Count;
+            if (left) list.AddFirst(args[i]);
+            else list.AddLast(args[i]);
         }
+        count = list.Count;
         
         return RespEncoder.Encode(count, isSimpleString: false);
     }
@@ -49,25 +46,22 @@ public class ListCommands
         }
 
         string? value = null;
-        lock (list)
+        if (list.Count > 0)
         {
-            if (list.Count > 0)
+            if (left)
             {
-                if (left)
-                {
-                    value = list.First?.Value;
-                    list.RemoveFirst();
-                }
-                else
-                {
-                    value = list.Last?.Value;
-                    list.RemoveLast();
-                }
-                
-                if (list.Count == 0)
-                {
-                    _storage.ListStore.TryRemove(key, out _);
-                }
+                value = list.First?.Value;
+                list.RemoveFirst();
+            }
+            else
+            {
+                value = list.Last?.Value;
+                list.RemoveLast();
+            }
+            
+            if (list.Count == 0)
+            {
+                _storage.ListStore.TryRemove(key, out _);
             }
         }
         
@@ -91,29 +85,26 @@ public class ListCommands
         }
 
         var results = new List<string>();
-        lock (list)
-        {
-            int count = list.Count;
-            if (start < 0) start = count + start;
-            if (stop < 0) stop = count + stop;
-            
-            if (start < 0) start = 0;
-            if (stop < 0) stop = 0;
-            if (start >= count || start > stop) return RespEncoder.Encode(Array.Empty<string>());
-            if (stop >= count) stop = count - 1;
+        int count = list.Count;
+        if (start < 0) start = count + start;
+        if (stop < 0) stop = count + stop;
+        
+        if (start < 0) start = 0;
+        if (stop < 0) stop = 0;
+        if (start >= count || start > stop) return RespEncoder.Encode(Array.Empty<string>());
+        if (stop >= count) stop = count - 1;
 
-            var current = list.First;
-            int currentIndex = 0;
-            
-            while (current != null && currentIndex <= stop)
+        var current = list.First;
+        int currentIndex = 0;
+        
+        while (current != null && currentIndex <= stop)
+        {
+            if (currentIndex >= start)
             {
-                if (currentIndex >= start)
-                {
-                    results.Add(current.Value);
-                }
-                current = current.Next;
-                currentIndex++;
+                results.Add(current.Value);
             }
+            current = current.Next;
+            currentIndex++;
         }
 
         return RespEncoder.Encode(results.ToArray());

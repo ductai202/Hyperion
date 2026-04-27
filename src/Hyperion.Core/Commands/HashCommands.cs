@@ -18,18 +18,15 @@ public class HashCommands
         var hash = _storage.HashStore.GetOrAdd(key, _ => new Dictionary<string, string>());
         int added = 0;
         
-        lock (hash)
+        for (int i = 1; i < args.Length; i += 2)
         {
-            for (int i = 1; i < args.Length; i += 2)
+            string field = args[i];
+            string value = args[i + 1];
+            if (!hash.ContainsKey(field))
             {
-                string field = args[i];
-                string value = args[i + 1];
-                if (!hash.ContainsKey(field))
-                {
-                    added++;
-                }
-                hash[field] = value;
+                added++;
             }
+            hash[field] = value;
         }
         
         return RespEncoder.Encode(added, isSimpleString: false);
@@ -43,12 +40,9 @@ public class HashCommands
 
         if (_storage.HashStore.TryGetValue(key, out var hash))
         {
-            lock (hash)
+            if (hash.TryGetValue(field, out var value))
             {
-                if (hash.TryGetValue(field, out var value))
-                {
-                    return RespEncoder.Encode(value, isSimpleString: false);
-                }
+                return RespEncoder.Encode(value, isSimpleString: false);
             }
         }
         
@@ -66,19 +60,16 @@ public class HashCommands
         }
 
         int removed = 0;
-        lock (hash)
+        for (int i = 1; i < args.Length; i++)
         {
-            for (int i = 1; i < args.Length; i++)
+            if (hash.Remove(args[i]))
             {
-                if (hash.Remove(args[i]))
-                {
-                    removed++;
-                }
+                removed++;
             }
-            if (hash.Count == 0)
-            {
-                _storage.HashStore.TryRemove(key, out _);
-            }
+        }
+        if (hash.Count == 0)
+        {
+            _storage.HashStore.TryRemove(key, out _);
         }
         
         return RespEncoder.Encode(removed, isSimpleString: false);
@@ -95,13 +86,10 @@ public class HashCommands
         }
 
         var results = new List<string>();
-        lock (hash)
+        foreach (var kvp in hash)
         {
-            foreach (var kvp in hash)
-            {
-                results.Add(kvp.Key);
-                results.Add(kvp.Value);
-            }
+            results.Add(kvp.Key);
+            results.Add(kvp.Value);
         }
         
         return RespEncoder.Encode(results.ToArray());

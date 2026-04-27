@@ -33,6 +33,10 @@ public class Dict
         var obj = new DictObject(key, value);
         if (ttlMs > 0)
         {
+            if (!_expiryStore.ContainsKey(key))
+            {
+                Stats.HashKeySpaceStat.IncrementExpires();
+            }
             _expiryStore[key] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + ttlMs;
         }
         return obj;
@@ -42,7 +46,7 @@ public class Dict
     {
         if (!_store.ContainsKey(key))
         {
-            Stats.HashKeySpaceStat.Key++;
+            Stats.HashKeySpaceStat.IncrementKey();
         }
         _store[key] = obj;
     }
@@ -62,8 +66,11 @@ public class Dict
         bool removed = _store.TryRemove(key, out _);
         if (removed)
         {
-            Stats.HashKeySpaceStat.Key--;
-            _expiryStore.TryRemove(key, out _);
+            Stats.HashKeySpaceStat.DecrementKey();
+            if (_expiryStore.TryRemove(key, out _))
+            {
+                Stats.HashKeySpaceStat.DecrementExpires();
+            }
         }
         return removed;
     }

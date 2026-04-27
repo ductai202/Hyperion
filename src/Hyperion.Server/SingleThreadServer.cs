@@ -19,6 +19,7 @@ public sealed class SingleThreadServer
     private readonly ILogger<SingleThreadServer> _logger;
     private readonly int _port;
     private TcpListener? _listener;
+    private readonly SemaphoreSlim _executionLock = new(1, 1);
 
     public SingleThreadServer(ICommandExecutor executor, ILogger<SingleThreadServer> logger, int port)
     {
@@ -102,8 +103,17 @@ public sealed class SingleThreadServer
                 {
                     if (command is not null)
                     {
-                        var response = _executor.Execute(command);
-                        await stream.WriteAsync(response, cancellationToken);
+                        // Ensure only one command is executed at a time globally in single-thread mode
+                        await _executionLock.WaitAsync(cancellationToken);
+                        try
+                        {
+                            var response = _executor.Execute(command);
+                            await stream.WriteAsync(response, cancellationToken);
+                        }
+                        finally
+                        {
+                            _executionLock.Release();
+                        }
                     }
                 }
 
