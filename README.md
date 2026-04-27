@@ -122,6 +122,11 @@ We chose **FNV-1a (Fowler-Noll-Vo)** as our partitioning hash because it is a no
 **Multi-Key Commands & Hash Tags**
 To handle commands that span multiple keys (like `DEL key1 key2`), Hyperion implements a **Scatter-Gather** routing engine inspired by Dragonfly. If keys map to different shards, the orchestrator splits the command into sub-tasks, dispatches them concurrently to the appropriate workers, and then aggregates the results. To force related keys to the same shard and avoid scatter-gather overhead, Hyperion supports **Redis Cluster Hash Tags** (e.g., `{user:1}:name` and `{user:1}:age` will always be routed to the same lock-free shard).
 
+**References:**
+- [Dragonfly Transactions & Scatter-Gather Logic](https://www.dragonflydb.io/blog/transactions-in-dragonfly)
+- [Dragonfly FAQ: Shared-Nothing & Vertical Scaling](https://www.dragonflydb.io/docs/about/faq)
+- [VLL Algorithm: The research behind Dragonfly's multi-key coordination](https://www.cs.umd.edu/~abadi/papers/vldbj-vll.pdf)
+
 No mutexes, no spinlocks, no contention.
 
 ---
