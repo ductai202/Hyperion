@@ -45,28 +45,75 @@ Hyperion speaks standard RESP2, so you can connect with any `redis-cli` or Redis
 
 ### Single-thread mode
 
-Straightforward — one `TcpListener`, one `CommandExecutor`, one `Storage`. All clients share the same thread. Simple and lock-free.
+Classic and simple: one event loop handles everything from reading the socket to executing the command and writing back. No locks, no context switching, just pure speed.
 
-### Multi-thread mode
+```mermaid
+graph TD
+    subgraph Clients
+        C1[Client 1]
+        C2[Client 2]
+        CN[Client N]
+    end
 
+    C1 & C2 & CN -->|TCP| TL[TCP Listener]
+    TL -->|Connection| EP[Event Loop / Single Thread]
+    
+    subgraph "Server Engine"
+        EP -->|1. Parse| RD[RESP Decoder]
+        RD -->|2. Exec| CE[Command Executor]
+        CE -->|3. Access| ST[Storage]
+        ST -->|4. Result| RE[RESP Encoder]
+        RE -->|5. Write| EP
+    end
+    
+    EP -->|RESP Response| C1 & C2 & CN
 ```
-    Clients
-      │
-      ▼
-  TCP Listener (round-robin assigns to IO handlers)
-      │
-  ┌───┴───┐
-  ▼       ▼
-IO H.1  IO H.2  ...    ← parse RESP, dispatch to router
-  │       │
-  ▼       ▼
-  Key Router (FNV-1a)   ← hash(key) % N → worker ID
-  │       │
-  ▼       ▼
-Worker 0  Worker 1  ... ← each owns private Storage shard
+
+### Multi-thread mode (Share-nothing)
+
+Inspired by DragonflyDB. We split the workload into **IO Handlers** and **Workers**. Each worker owns its own data shard, so they never have to wait for each other.
+
+```mermaid
+flowchart TD
+    subgraph Clients
+        C1[Client 1]
+        C2[Client 2]
+        CN[Client N]
+    end
+
+    C1 & C2 & CN -->|TCP| TL[TCP Listener]
+
+    subgraph "IO Layer"
+        TL -->|Round Robin| IH1[IO Handler 1]
+        TL -->|Round Robin| IH2[IO Handler 2]
+    end
+
+    subgraph "Routing"
+        IH1 & IH2 -->|FNV-1a Hash| RT[Key Router]
+    end
+
+    subgraph "Execution Layer (Share-Nothing)"
+        RT -->|Key maps to Worker 0| W0[Worker 0]
+        RT -->|Key maps to Worker 1| W1[Worker 1]
+        RT -->|Key maps to Worker N| WN[Worker N]
+
+        W0 --- S0[(Shard 0)]
+        W1 --- S1[(Shard 1)]
+        WN --- SN[(Shard N)]
+    end
+
+    W0 & W1 & WN -.->|Result| IH1 & IH2
+    IH1 & IH2 -.->|RESP Response| C1 & C2 & CN
+
+    style W0 fill:#f9f,stroke:#333,stroke-width:2px
+    style W1 fill:#bbf,stroke:#333,stroke-width:2px
+    style WN fill:#bfb,stroke:#333,stroke-width:2px
+    style S0 fill:#f9f,stroke:#333
+    style S1 fill:#bbf,stroke:#333
+    style SN fill:#bfb,stroke:#333
 ```
 
-On a machine with 8 logical cores, Hyperion spins up 4 IO handlers + 4 workers. Each worker has its own `Storage`, `CommandExecutor`, and a `Channel<WorkerTask>` inbox. Since a given key always maps to the same worker, there's no contention.
+On a machine with 8 logical cores, Hyperion spins up 4 IO handlers + 4 workers. Since a given key always maps to the same worker via FNV-1a hashing, the storage shards are completely isolated. No mutexes, no spinlocks, no contention.
 
 ---
 
