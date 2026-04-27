@@ -9,6 +9,7 @@ public class CommandExecutor : ICommandExecutor
     private readonly StringCommands _stringCommands;
     private readonly SetCommands _setCommands;
     private readonly ZSetCommands _zsetCommands;
+    private readonly BloomCommands _bloomCommands;
 
     public CommandExecutor()
     {
@@ -16,6 +17,7 @@ public class CommandExecutor : ICommandExecutor
         _stringCommands = new StringCommands(_storage);
         _setCommands = new SetCommands(_storage);
         _zsetCommands = new ZSetCommands(_storage);
+        _bloomCommands = new BloomCommands(_storage);
     }
 
     public CommandExecutor(Storage storage)
@@ -24,6 +26,7 @@ public class CommandExecutor : ICommandExecutor
         _stringCommands = new StringCommands(_storage);
         _setCommands = new SetCommands(_storage);
         _zsetCommands = new ZSetCommands(_storage);
+        _bloomCommands = new BloomCommands(_storage);
     }
 
     public byte[] Execute(RespCommand command)
@@ -45,9 +48,13 @@ public class CommandExecutor : ICommandExecutor
             "ZSCORE" => _zsetCommands.Zscore(command.Args),
             "ZRANK" => _zsetCommands.Zrank(command.Args),
             "ZRANGE" => _zsetCommands.Zrange(command.Args),
+            "BF.RESERVE" => _bloomCommands.BfReserve(command.Args),
+            "BF.MADD" => _bloomCommands.BfMadd(command.Args),
+            "BF.EXISTS" => _bloomCommands.BfExists(command.Args),
             _ => RespEncoder.Encode(new Exception($"ERR unknown command '{command.Cmd}'"))
         };
     }
+
 
 
     public void RunActiveExpiry()
