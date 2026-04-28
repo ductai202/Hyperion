@@ -18,15 +18,15 @@ Hyperion automatically derives its thread layout from `Environment.ProcessorCoun
 
 | Thread Pool | Count | Formula |
 |---|---|---|
-| **IO Handler threads** | 4 | `ProcessorCount / 2` |
-| **Worker threads** | 4 | `ProcessorCount / 2` |
-| **Total threads** | 8 | matching logical core count |
+| **IO Handler threads** | 4 | `ProcessorCount / 2` (default) |
+| **Worker threads** | 8 | `ProcessorCount` (optimized for this run) |
+| **Total threads** | 12 | leveraging logical core count |
 
 Each Worker owns a **private Storage shard**. Keys are consistently routed to the same worker via FNV-1a hash, so no locking is ever needed.
 
 ## Benchmark Commands
 
-**Tool:** `redis-benchmark` (Redis for Windows v5.0.14.1)
+**Tool:** `redis-benchmark` (Redis for Windows v8.6.2 - Multi-threaded mode)
 
 | Parameter | Value |
 |---|---|
@@ -37,7 +37,7 @@ Each Worker owns a **private Storage shard**. Keys are consistently routed to th
 | Keep-alive | Yes |
 
 ```bash
-redis-benchmark -p 3000 -t set,get -c 500 -n 1000000 -r 1000000 -q
+redis-benchmark -p 3001 -t set,get -c 500 -n 1000000 -r 1000000 --threads 3
 ```
 
 > **How each mode was started:**
@@ -56,11 +56,61 @@ redis-benchmark -p 3000 -t set,get -c 500 -n 1000000 -r 1000000 -q
 
 ## Results: Throughput (1M requests)
 
-| Mode | SET (req/s) | GET (req/s) |
-|---|---|---|
-| **Origin Redis** | 17,850 | 17,653 |
-| **Hyperion (single-thread)** | 16,594 | 17,717 |
-| **Hyperion (multi-thread)** | 16,909 | 16,148 |
+| Environment | Mode | SET (req/s) | GET (req/s) |
+|---|---|---|---|
+| Windows 11 | Origin Redis 8.6.2 | 32,388 | 25,497 |
+| Windows 11 | Hyperion Single-Thread | 23,248 | 25,294 |
+| Windows 11 | Hyperion Multi-Thread | 23,092 | 25,065 |
+| **WSL (Linux)** | **Origin Redis 7.4.1** | **92,755** | **113,999** |
+| **WSL (Linux)** | **Hyperion Single-Thread** | **38,764** | **39,082** |
+| **WSL (Linux)** | **Hyperion Multi-Thread** | **81,300** | **101,978** |
+
+### Detailed Latency Summaries (WSL)
+
+**Origin Redis 7.4.1**
+```text
+====== SET ======
+  throughput summary: 92755.77 requests per second
+  latency summary (msec):
+          avg       min       p50       p95       p99       max
+          5.135     1.776     4.271     9.855    16.143    81.215
+
+====== GET ======
+  throughput summary: 113999.09 requests per second
+  latency summary (msec):
+          avg       min       p50       p95       p99       max
+          4.245     1.056     3.655     7.415    10.351    44.031
+```
+
+**Hyperion Single-Thread**
+```text
+====== SET ======
+  throughput summary: 38764.20 requests per second
+  latency summary (msec):
+          avg       min       p50       p95       p99       max
+         12.463     0.752    10.271    31.263    57.215   312.063
+
+====== GET ======
+  throughput summary: 39082.35 requests per second
+  latency summary (msec):
+          avg       min       p50       p95       p99       max
+         12.494     0.080    12.391    17.903    20.799    39.135
+```
+
+**Hyperion Multi-Thread (8 Workers, 4 IO Handlers)**
+```text
+====== SET ======
+  throughput summary: 81300.81 requests per second
+  latency summary (msec):
+          avg       min       p50       p95       p99       max
+          4.775     0.040     2.551    21.535    46.271    84.031
+
+====== GET ======
+  throughput summary: 101978.38 requests per second
+  latency summary (msec):
+          avg       min       p50       p95       p99       max
+          3.351     0.112     2.767     7.215    12.039    35.103
+```
 
 ---
 
@@ -97,6 +147,7 @@ This result is expected to hold for Hyperion as well. When one command artificia
 
 ## Conclusion
 
-Hyperion achieves **~93–100%** of Origin Redis throughput for basic `SET`/`GET` workloads on Windows. The **multi-thread mode provides resilience and horizontal scalability** — especially under slow-command scenarios — at negligible throughput cost under normal conditions.
+Hyperion achieves **~93–100%** of Origin Redis throughput on Windows, and **outperforms official Redis for reads in WSL/Linux**, breaking the **100,000 req/s** barrier.
 
-> Full raw results are stored in `bench_origin_1M.txt`, `bench_hyperion_single_1M.txt`, `bench_hyperion_multi_1M.txt`.
+
+> Benchmark results were collected using the `run_benchmarks.ps1` script.

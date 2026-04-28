@@ -14,6 +14,9 @@ class Program
     {
         int port = 3000;
         string mode = "multi";
+        int workers = Environment.ProcessorCount;
+        int ioHandlers = Math.Max(1, Environment.ProcessorCount / 2);
+        LogLevel minLog = LogLevel.Warning;
 
         for (int i = 0; i < args.Length - 1; i++)
         {
@@ -21,12 +24,18 @@ class Program
                 port = argPort;
             if (args[i] == "--mode")
                 mode = args[i + 1].ToLowerInvariant();
+            if (args[i] == "--workers" && int.TryParse(args[i + 1], out int argWorkers))
+                workers = argWorkers;
+            if (args[i] == "--io" && int.TryParse(args[i + 1], out int argIo))
+                ioHandlers = argIo;
+            if (args[i] == "--log" && Enum.TryParse(args[i + 1], true, out LogLevel level))
+                minLog = level;
         }
 
         using var loggerFactory = LoggerFactory.Create(builder =>
         {
             builder.AddConsole();
-            builder.SetMinimumLevel(LogLevel.Information);
+            builder.SetMinimumLevel(minLog);
         });
 
         var logger = loggerFactory.CreateLogger<Program>();
@@ -41,7 +50,11 @@ class Program
 
         AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
 
-        logger.LogInformation("Starting Hyperion in [{Mode}] mode on port {Port}", mode, port);
+        // Always log startup info at Information level if possible, or just use Console
+        if (minLog <= LogLevel.Information)
+            logger.LogInformation("Starting Hyperion in [{Mode}] mode on port {Port} (Workers: {Workers}, IO: {IO})", mode, port, workers, ioHandlers);
+        else
+            Console.WriteLine($"Starting Hyperion in [{mode}] mode on port {port} (Workers: {workers}, IO: {ioHandlers}, Log: {minLog})");
 
         try
         {
@@ -53,13 +66,14 @@ class Program
             }
             else
             {
-                var server = new HyperionServer(loggerFactory, port);
+                var server = new HyperionServer(loggerFactory, port, workers, ioHandlers);
                 await server.RunAsync(cts.Token);
             }
         }
         catch (OperationCanceledException)
         {
-            logger.LogInformation("Server shut down completely.");
+            if (minLog <= LogLevel.Information)
+                logger.LogInformation("Server shut down completely.");
         }
         catch (Exception ex)
         {
