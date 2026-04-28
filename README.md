@@ -172,19 +172,27 @@ dotnet test
 ## Benchmark
 
 ### Benchmark (Windows vs WSL)
-Tested with `redis-benchmark` (500 clients, 1M requests, 1M keys).
+Tested with `redis-benchmark` (500 clients, 1M requests, 1M keys) on an 8-core machine.
 
 | Environment | Mode | SET (req/s) | GET (req/s) |
 |---|---|---|---|
-| **Windows 11** | Redis 8.6.2 (Origin) | 32,388 | 25,497 |
-| **Windows 11** | Hyperion Multi-Thread | 23,092 | 25,065 |
-| **WSL (Ubuntu)** | Redis 7.4.1 (Origin) | 92,755 | 113,999 |
-| **WSL (Ubuntu)** | **Hyperion Multi-Thread** | **81,300** | **101,978** |
+| **Windows 11** | Origin Redis 8.6.2 | 17,777 | 18,221 |
+| **Windows 11** | Hyperion Single-Thread | 15,841 | 15,389 |
+| **Windows 11** | **Hyperion Multi-Thread** | **30,921** | **26,978** |
+| **WSL (Ubuntu)** | Origin Redis 7.4.1 | 78,186 | 117,412 |
+| **WSL (Ubuntu)** | Hyperion Single-Thread | 45,785 | 43,425 |
+| **WSL (Ubuntu)** | **Hyperion Multi-Thread** | **94,679** | **113,856** |
 
-**Hyperion breaks the 100k req/s barrier on Linux!** While Windows performance is limited by OS network overhead, the WSL/Linux results prove that Hyperion's share-nothing architecture scales efficiently, outperforming official Redis in read-heavy workloads.
+**Why Multi-Thread Wins Under Load:**
+While single-thread mode is fast, the true power of the share-nothing architecture shines when commands are delayed. By injecting a synthetic 100µs delay into execution, we see:
+
+| Environment | Mode (100µs delay) | GET (req/s) |
+|---|---|---|
+| **WSL (Ubuntu)** | Hyperion Single-Thread | 36,995 |
+| **WSL (Ubuntu)** | **Hyperion Multi-Thread** | **106,929** (2.89x faster) |
 
 
-Hyperion hits ~93-100% of Redis throughput on basic SET/GET. The multi-thread mode's real advantage shows under slow-command scenarios — when one command blocks, other workers keep processing.
+When one command artificially blocks, the share-nothing design prevents other workers from being blocked, ensuring high throughput even under contention.
 
 Full details in [doc/Benchmark.md](doc/Benchmark.md).
 

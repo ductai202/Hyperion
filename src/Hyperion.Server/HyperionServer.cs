@@ -29,7 +29,7 @@ public sealed class HyperionServer
     private int _nextIOHandlerIndex = 0;
     private TcpListener? _listener;
 
-    public HyperionServer(ILoggerFactory loggerFactory, int port, int numWorkers = 0, int numIOHandlers = 0)
+    public HyperionServer(ILoggerFactory loggerFactory, int port, int numWorkers = 0, int numIOHandlers = 0, int delayUs = 0)
     {
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<HyperionServer>();
@@ -46,7 +46,7 @@ public sealed class HyperionServer
         _workers = new Worker[_numWorkers];
         for (int i = 0; i < _numWorkers; i++)
         {
-            _workers[i] = new Worker(i, bufferSize: 10000);
+            _workers[i] = new Worker(i, bufferSize: 10000, delayUs: delayUs);
         }
 
         // Initialize IO Handlers

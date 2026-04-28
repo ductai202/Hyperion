@@ -103,5 +103,27 @@ $hypMulti = Start-Process -FilePath $HYPERION_EXE -ArgumentList "--port 3000 --m
 if (-not (Await-port 3000 20000)) { Write-Error "Hyperion multi did not start"; exit 1 }
 Run-Bench -Label "Hyperion Multi, SET/GET, 1M reqs, $C clients, $THREADS threads"
 Stop-Process -Id $hypMulti.Id -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
+# -------- 4. Hyperion Single Thread (100us Delay) --------
+Write-Host ""
+Write-Host "=========================================="
+Write-Host "  Hyperion Single-Thread (100us Delay)"
+Write-Host "=========================================="
+$hypSingleD = Start-Process -FilePath $HYPERION_EXE -ArgumentList "--port 3000 --mode single --log warning --delay-us 100" -PassThru -WindowStyle Hidden
+if (-not (Await-port 3000 20000)) { Write-Error "Hyperion single (delay) did not start"; exit 1 }
+Run-Bench -Label "Hyperion Single (100us Delay), SET/GET, 1M reqs, $C clients, $THREADS threads"
+Stop-Process -Id $hypSingleD.Id -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
+# -------- 5. Hyperion Multi Thread (100us Delay) --------
+Write-Host ""
+Write-Host "=========================================="
+Write-Host "  Hyperion Multi-Thread (100us Delay)"
+Write-Host "=========================================="
+$hypMultiD = Start-Process -FilePath $HYPERION_EXE -ArgumentList "--port 3000 --mode multi --workers 8 --io 4 --log warning --delay-us 100" -PassThru -WindowStyle Hidden
+if (-not (Await-port 3000 20000)) { Write-Error "Hyperion multi (delay) did not start"; exit 1 }
+Run-Bench -Label "Hyperion Multi (100us Delay), SET/GET, 1M reqs, $C clients, $THREADS threads"
+Stop-Process -Id $hypMultiD.Id -Force -ErrorAction SilentlyContinue
 
 Write-Host "All benchmarks done."

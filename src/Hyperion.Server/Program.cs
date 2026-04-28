@@ -17,6 +17,7 @@ class Program
         int workers = Environment.ProcessorCount;
         int ioHandlers = Math.Max(1, Environment.ProcessorCount / 2);
         LogLevel minLog = LogLevel.Warning;
+        int delayUs = 0;
 
         for (int i = 0; i < args.Length - 1; i++)
         {
@@ -28,6 +29,8 @@ class Program
                 workers = argWorkers;
             if (args[i] == "--io" && int.TryParse(args[i + 1], out int argIo))
                 ioHandlers = argIo;
+            if (args[i] == "--delay-us" && int.TryParse(args[i + 1], out int argDelay))
+                delayUs = argDelay;
             if (args[i] == "--log" && Enum.TryParse(args[i + 1], true, out LogLevel level))
                 minLog = level;
         }
@@ -60,13 +63,13 @@ class Program
         {
             if (mode == "single")
             {
-                var executor = new CommandExecutor();
+                var executor = new CommandExecutor { DelayUs = delayUs };
                 var server = new SingleThreadServer(executor, loggerFactory.CreateLogger<SingleThreadServer>(), port);
                 await server.RunAsync(cts.Token);
             }
             else
             {
-                var server = new HyperionServer(loggerFactory, port, workers, ioHandlers);
+                var server = new HyperionServer(loggerFactory, port, workers, ioHandlers, delayUs);
                 await server.RunAsync(cts.Token);
             }
         }

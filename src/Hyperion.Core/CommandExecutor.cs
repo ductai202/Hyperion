@@ -39,8 +39,15 @@ public class CommandExecutor : ICommandExecutor
         _listCommands = new ListCommands(_storage);
     }
 
+    public int DelayUs { get; set; } = 0;
+
     public byte[] Execute(RespCommand command)
     {
+        if (DelayUs > 0)
+        {
+            System.Threading.Thread.Sleep(TimeSpan.FromMicroseconds(DelayUs));
+        }
+
         return command.Cmd switch
         {
             "PING" => _stringCommands.Ping(command.Args),

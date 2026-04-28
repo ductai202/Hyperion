@@ -84,5 +84,27 @@ SERVER_PID=$!
 if ! await_port $PORT; then echo "Hyperion failed to start"; kill $SERVER_PID; exit 1; fi
 run_bench "Hyperion Multi, SET/GET, 1M reqs, $C clients, $THREADS threads"
 kill $SERVER_PID
+sleep 2
+
+# 4. Hyperion Single (100us delay)
+echo -e "\n=========================================="
+echo "  Hyperion Single-Thread (100us Delay)"
+echo "=========================================="
+$HYPERION_EXE --port $PORT --mode single --log warning --delay-us 100 &
+SERVER_PID=$!
+if ! await_port $PORT; then echo "Hyperion failed to start"; kill $SERVER_PID; exit 1; fi
+run_bench "Hyperion Single (100us Delay), SET/GET, 1M reqs, $C clients, $THREADS threads"
+kill $SERVER_PID
+sleep 2
+
+# 5. Hyperion Multi (100us delay)
+echo -e "\n=========================================="
+echo "  Hyperion Multi-Thread (100us Delay)"
+echo "=========================================="
+$HYPERION_EXE --port $PORT --mode multi --workers $WORKERS --io $IO_HANDLERS --log warning --delay-us 100 &
+SERVER_PID=$!
+if ! await_port $PORT; then echo "Hyperion failed to start"; kill $SERVER_PID; exit 1; fi
+run_bench "Hyperion Multi (100us Delay), SET/GET, 1M reqs, $C clients, $THREADS threads"
+kill $SERVER_PID
 
 echo -e "\n${GREEN}All benchmarks done.${NC}"

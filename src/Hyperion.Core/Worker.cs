@@ -17,7 +17,7 @@ public class Worker
     // Channel is a thread-safe queue for async consumer-producer patterns
     private readonly Channel<WorkerTask> _taskChannel;
 
-    public Worker(int id, int bufferSize = 1024)
+    public Worker(int id, int bufferSize = 1024, int delayUs = 0)
     {
         Id = id;
         
@@ -25,7 +25,7 @@ public class Worker
         // as long as a specific key is always routed to the same worker, it will
         // never experience race conditions, eliminating the need for locks.
         _storage = new Storage();
-        _executor = new CommandExecutor(_storage);
+        _executor = new CommandExecutor(_storage) { DelayUs = delayUs };
         
         // Bounded channel to prevent infinite memory usage under heavy load
         _taskChannel = Channel.CreateBounded<WorkerTask>(new BoundedChannelOptions(bufferSize)
