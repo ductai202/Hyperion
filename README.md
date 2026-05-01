@@ -4,7 +4,7 @@ A Redis-compatible in-memory database, built from scratch in C#/.NET 10.
 
 I started this project to deeply understand how Redis works under the hood — not just the API, but the internals: how it parses the wire protocol, manages key expiry, how a Skip List enables O(log N) ranked queries, and why single-threaded servers can outperform naively multi-threaded ones.
 
-The multi-threaded mode uses a **share-nothing architecture** — each worker thread owns a private data shard with no locks on the hot path. The single-threaded mode uses a **true event-loop** design: one dedicated OS thread owns all command execution, fed by a lock-free channel from async IO handlers.
+The multi-threaded mode uses a **share-nothing architecture** — each worker thread owns a private data shard with no locks on the hot path. The single-threaded mode uses a **true event-loop** design: one dedicated OS thread owns all command execution, fed by async IO handlers through a lock-free channel.
 
 Hyperion speaks standard RESP2, so you can connect with any `redis-cli` or Redis client library.
 
@@ -36,8 +36,8 @@ Hyperion speaks standard RESP2, so you can connect with any `redis-cli` or Redis
 | Count-Min Sketch | `CMS.INITBYDIM`, `CMS.INITBYPROB`, `CMS.INCRBY`, `CMS.QUERY` |
 
 **Server modes:**
-- **Single-threaded** — One dedicated OS thread owns all command execution. Async IO handlers feed commands via a lock-free `Channel`. Responses are batched with `PipeWriter` for maximum throughput.
-- **Multi-threaded (share-nothing)** — N worker threads, each with its own private storage shard. Keys are routed via FNV-1a hash. IO handlers batch responses with `PipeWriter`. No locks anywhere on the hot path.
+- **Single-threaded** — One dedicated OS thread owns all command execution. Async IO handlers feed commands through a lock-free `Channel`. Responses are batched with `PipeWriter` — one flush per read batch.
+- **Multi-threaded (share-nothing)** — N worker threads each own a private storage shard. IO Handlers route commands via FNV-1a hash, collect results and batch-flush responses with `PipeWriter`.
 
 **Key expiry** — Both lazy (check on access) and active (background sweep sampling and deleting expired keys).
 
@@ -47,88 +47,106 @@ Hyperion speaks standard RESP2, so you can connect with any `redis-cli` or Redis
 
 ### Single-Thread Mode
 
-One dedicated OS thread (`TaskCreationOptions.LongRunning` → a real `pthread` on Linux) owns all command execution. Multiple async IO handlers read from their TCP connections and enqueue commands to a single shared `Channel<WorkItem>`. The event-loop thread drains the channel sequentially — zero locks, zero contention.
+The goal is simple: **one thread, zero locks, maximum cache locality.**
 
-Responses are accumulated into a `PipeWriter` buffer per connection and flushed **once per read batch** instead of once per command. This batched-write design is the key to high throughput: one `writev()` syscall serves all pipelined responses.
+#### 1. Connection Layer
+The `TcpListener` accepts connections. For each client, a lightweight `async Task` (managed by the .NET thread pool) handles IO — reading bytes from the socket using `PipeReader`.
 
 ```mermaid
-graph TD
-    subgraph Clients
-        C1[Client 1]
-        C2[Client 2]
-        CN[Client N]
-    end
-
-    C1 & C2 & CN -->|TCP| TL[TCP Listener]
-    TL -->|Spawn async handler| IH[IO Handlers\n async, one per connection]
-
-    subgraph "Single Event Loop Thread pthread"
-        CH[Channel WorkItem\nlock-free queue]
-        EL[Event Loop\nLongRunning Task]
-        CE[Command Executor]
-        ST[(Private Storage\nplain Dictionary)]
-        CH --> EL --> CE --> ST
-    end
-
-    IH -->|WriteAsync WorkItem| CH
-    EL -->|TrySetResult response| IH
-    IH -->|PipeWriter.Write batch| IH
-    IH -->|FlushAsync once per batch| C1 & C2 & CN
+flowchart LR
+    C1[Client 1] & C2[Client 2] & CN[Client N]
+    -->|TCP connect| TL[TcpListener]
+    TL -->|"AcceptTcpClientAsync\n(one Task per client)"| IH["Async IO Tasks\n(thread pool)"]
 ```
+
+#### 2. Execution Layer
+Each IO task parses complete RESP commands from its `PipeReader` and enqueues a `WorkItem` to a shared lock-free `Channel<WorkItem>`. A single dedicated OS thread (`LongRunning`) consumes the channel one item at a time and executes every command against the `CommandExecutor` — no synchronization needed because only this thread ever touches the data.
+
+```mermaid
+flowchart LR
+    IH["Async IO Tasks"]
+    -->|"RespParser.TryParseCommand\nChannel.WriteAsync WorkItem"| CH["Channel WorkItem\nUnbounded lock-free"]
+    CH -->|SingleReader| EL["Event Loop Thread\nLongRunning pthread"]
+    EL --> CE[CommandExecutor]
+    CE --> ST[("Storage\nplain Dictionary")]
+    ST -->|result byte| EL
+    EL -->|"TCS.TrySetResult"| IH
+```
+
+#### 3. Response Layer
+Once the IO task receives the result from the `TaskCompletionSource`, it calls `PipeWriter.Write()` — which buffers the bytes locally. After all commands in the current read batch are processed, a **single** `PipeWriter.FlushAsync()` sends them all in one syscall.
+
+```mermaid
+flowchart LR
+    IH["IO Task\n(per connection)"]
+    -->|"PipeWriter.Write response\n(buffered, no syscall)"| PW["PipeWriter\nwrite buffer"]
+    PW -->|"FlushAsync\nONE syscall per batch"| NET["NetworkStream"]
+    NET --> C["Client"]
+```
+
+---
 
 ### Multi-Thread Mode (Share-Nothing)
 
-Inspired by DragonflyDB. The workload is split into **IO Handlers** (async network IO) and **Workers** (synchronous command execution). Each worker owns its own private storage shard — because a key always routes to the same worker via FNV-1a hash, there is never any cross-thread data access.
+The goal: **scale across CPU cores with zero cross-thread data sharing.**
 
-IO Handlers batch all responses from a single read into a `PipeWriter` buffer and flush once, eliminating the per-response syscall overhead.
+#### 1. Connection Layer
+`HyperionServer` accepts connections and distributes them to IO Handlers in **round-robin**. Each `IOHandler` is an async loop that reads from its assigned clients using `PipeReader`.
+
+```mermaid
+flowchart LR
+    C1[Client 1] & C2[Client 2] & CN[Client N]
+    -->|TCP connect| TL[TcpListener]
+    TL -->|"round-robin\nInterlocked.Increment"| IH1[IOHandler 0]
+    TL --> IH2[IOHandler 1]
+    TL --> IHN[IOHandler N]
+```
+
+#### 2. Routing & Execution Layer
+Each `IOHandler` parses commands and calls `HyperionServer.DispatchAsync()`. The dispatcher extracts the key, resolves any Hash Tag (`{tag}` syntax), runs FNV-1a hash, and enqueues the `WorkerTask` to the matching Worker's `Channel`. Each Worker is a `LongRunning` thread with its own **private** `Storage` — no locking ever needed.
 
 ```mermaid
 flowchart TD
-    subgraph Clients
-        C1[Client 1]
-        C2[Client 2]
-        CN[Client N]
+    IH["IOHandler\n(parses RESP)"]
+    -->|"DispatchAsync WorkerTask"| RT
+
+    subgraph RT["Router: HyperionServer.DispatchAsync"]
+        HT["1. Resolve Hash Tag\n{tag} extraction"]
+        FNV["2. FNV-1a hash mod N\nstackalloc — zero alloc"]
+        HT --> FNV
     end
 
-    C1 & C2 & CN -->|TCP| TL[TCP Listener]
+    FNV -->|"key % N = 0"| W0
+    FNV -->|"key % N = 1"| W1
+    FNV -->|"key % N = N"| WN
 
-    subgraph "IO Layer"
-        TL -->|Round Robin| IH1[IO Handler 1]
-        TL -->|Round Robin| IH2[IO Handler 2]
+    subgraph W0[Worker 0]
+        CH0[Channel WorkItem] --> EL0[LongRunning Thread]
+        EL0 --> S0[(Shard 0\nDictionary)]
     end
-
-    subgraph "Routing"
-        IH1 & IH2 -->|FNV-1a Hash stackalloc| RT[Key Router]
+    subgraph W1[Worker 1]
+        CH1[Channel WorkItem] --> EL1[LongRunning Thread]
+        EL1 --> S1[(Shard 1\nDictionary)]
     end
-
-    subgraph "Execution Layer Share-Nothing"
-        RT -->|Key maps to Worker 0| W0[Worker 0\nChannel + LongRunning]
-        RT -->|Key maps to Worker 1| W1[Worker 1\nChannel + LongRunning]
-        RT -->|Key maps to Worker N| WN[Worker N\nChannel + LongRunning]
-
-        W0 --- S0[(Shard 0\nplain Dictionary)]
-        W1 --- S1[(Shard 1\nplain Dictionary)]
-        WN --- SN[(Shard N\nplain Dictionary)]
+    subgraph WN[Worker N]
+        CHN[Channel WorkItem] --> ELN[LongRunning Thread]
+        ELN --> SN[(Shard N\nDictionary)]
     end
-
-    W0 & W1 & WN -.->|TCS result| IH1 & IH2
-    IH1 & IH2 -.->|PipeWriter batch flush| C1 & C2 & CN
-
-    style W0 fill:#f9f,stroke:#333,stroke-width:2px
-    style W1 fill:#bbf,stroke:#333,stroke-width:2px
-    style WN fill:#bfb,stroke:#333,stroke-width:2px
-    style S0 fill:#f9f,stroke:#333
-    style S1 fill:#bbf,stroke:#333
-    style SN fill:#bfb,stroke:#333
 ```
 
-**FNV-1a routing** uses `stackalloc Span<byte>` for zero heap allocation per dispatch — no `byte[]` GC pressure on the hot path.
+**Special case — multi-key `DEL`:** If keys map to different shards, the dispatcher does a **Scatter-Gather**: splits the command into per-shard sub-tasks, dispatches them all concurrently, awaits all results, then sums the deleted count and resolves the original `TaskCompletionSource`.
 
-**Multi-Key Commands & Hash Tags** — Commands spanning multiple keys (like `DEL key1 key2`) use a Scatter-Gather engine: the orchestrator splits the command into per-shard sub-tasks, dispatches them concurrently, and aggregates results. Hash Tags (e.g. `{user:1}:name`) force related keys to the same shard.
+#### 3. Response Layer
+Same as single-thread: `IOHandler` collects all `TCS` results from the current read batch, writes them into a `PipeWriter` buffer, and flushes once.
 
-**References:**
-- [Dragonfly Transactions & Scatter-Gather Logic](https://www.dragonflydb.io/blog/transactions-in-dragonfly)
-- [Dragonfly FAQ: Shared-Nothing & Vertical Scaling](https://www.dragonflydb.io/docs/about/faq)
+```mermaid
+flowchart LR
+    W["Worker N\n(TCS.TrySetResult)"]
+    -->|"await task.ReplyCompletion"| IH["IOHandler"]
+    IH -->|"PipeWriter.Write\n(buffered)"| PW[PipeWriter]
+    PW -->|"FlushAsync\nONE syscall per batch"| NET[NetworkStream]
+    NET --> C[Client]
+```
 
 ---
 
@@ -175,7 +193,7 @@ OK
 
 ## Benchmark
 
-Tested on WSL2 (Ubuntu) using `redis-benchmark` with 500 clients, 1M requests, 1M random keys — same parameters for all servers for a fair comparison.
+Tested on WSL2 (Ubuntu) using `redis-benchmark` with 500 clients, 1M requests, 1M random keys.
 
 ```bash
 redis-benchmark -n 1000000 -t set,get -c 500 -h 127.0.0.1 -p 3000 -r 1000000 --threads 3 --csv
