@@ -30,8 +30,7 @@ public class BloomCommands
         if (_storage.BloomStore.ContainsKey(key))
             return RespEncoder.Encode(new Exception("ERR item exists"));
 
-        var bloom = new Bloom(capacity, errorRate);
-        _storage.BloomStore.TryAdd(key, bloom);
+        _storage.BloomStore[key] = new Bloom(capacity, errorRate);
         return Constants.RespOk;
     }
 
@@ -41,10 +40,11 @@ public class BloomCommands
             return RespEncoder.Encode(new Exception("ERR wrong number of arguments for 'BF.MADD' command"));
 
         string key = args[0];
-        // If not exists, RedisBloom usually auto-creates with default parameters,
-        // but here we can just create with some defaults or require reserve first.
-        // Let's mimic basic behavior: auto create with 100 capacity, 0.01 error rate if missing
-        var bloom = _storage.BloomStore.GetOrAdd(key, k => new Bloom(100, 0.01));
+        if (!_storage.BloomStore.TryGetValue(key, out var bloom))
+        {
+            bloom = new Bloom(100, 0.01);
+            _storage.BloomStore[key] = bloom;
+        }
 
         object[] results = new object[args.Length - 1];
         for (int i = 1; i < args.Length; i++)
@@ -52,16 +52,16 @@ public class BloomCommands
             string ele = args[i];
             if (bloom.Exist(ele))
             {
-                results[i - 1] = 0; // already exists
+                results[i - 1] = 0;
             }
             else
             {
                 bloom.Add(ele);
-                results[i - 1] = 1; // newly added
+                results[i - 1] = 1;
             }
         }
 
-        return RespEncoder.Encode(results); // array of integers
+        return RespEncoder.Encode(results);
     }
 
     public byte[] BfExists(string[] args)
@@ -73,11 +73,8 @@ public class BloomCommands
         string ele = args[1];
 
         if (!_storage.BloomStore.TryGetValue(key, out var bloom))
-        {
-            return Constants.RespZero; // doesn't exist
-        }
+            return Constants.RespZero;
 
-        bool exists = bloom.Exist(ele);
-        return exists ? Constants.RespOne : Constants.RespZero;
+        return bloom.Exist(ele) ? Constants.RespOne : Constants.RespZero;
     }
 }

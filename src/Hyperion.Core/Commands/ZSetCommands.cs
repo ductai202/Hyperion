@@ -1,3 +1,4 @@
+using System;
 using System.Globalization;
 using Hyperion.Config;
 using Hyperion.DataStructures;
@@ -20,14 +21,17 @@ public class ZSetCommands
             return RespEncoder.Encode(new Exception("ERR wrong number of arguments for 'ZADD' command"));
 
         string key = args[0];
-        var zset = _storage.ZSetStore.GetOrAdd(key, k => new ZSet());
+        if (!_storage.ZSetStore.TryGetValue(key, out var zset))
+        {
+            zset = new ZSet();
+            _storage.ZSetStore[key] = zset;
+        }
 
         int added = 0;
         for (int i = 1; i < args.Length; i += 2)
         {
             if (!double.TryParse(args[i], NumberStyles.Any, CultureInfo.InvariantCulture, out double score))
                 return RespEncoder.Encode(new Exception("ERR value is not a valid float"));
-            
             string ele = args[i + 1];
             added += zset.Add(score, ele);
         }
@@ -46,14 +50,10 @@ public class ZSetCommands
 
         int removed = 0;
         for (int i = 1; i < args.Length; i++)
-        {
             removed += zset.Rem(args[i]);
-        }
 
         if (zset.Len() == 0)
-        {
-            _storage.ZSetStore.TryRemove(key, out _);
-        }
+            _storage.ZSetStore.Remove(key);
 
         return RespEncoder.Encode(removed, isSimpleString: false);
     }
@@ -70,8 +70,7 @@ public class ZSetCommands
             return Constants.RespNil;
 
         var (exist, score) = zset.GetScore(ele);
-        if (!exist)
-            return Constants.RespNil;
+        if (!exist) return Constants.RespNil;
 
         return RespEncoder.Encode(score.ToString(CultureInfo.InvariantCulture), isSimpleString: false);
     }
@@ -88,8 +87,7 @@ public class ZSetCommands
             return Constants.RespNil;
 
         var (rank, _) = zset.GetRank(ele, reverse: false);
-        if (rank == -1)
-            return Constants.RespNil;
+        if (rank == -1) return Constants.RespNil;
 
         return RespEncoder.Encode(rank, isSimpleString: false);
     }
