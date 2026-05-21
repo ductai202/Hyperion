@@ -82,13 +82,14 @@ public sealed class SnapshotCoordinator
         try
         {
             _logger.LogInformation("[RDB] Starting SAVE (single-thread mode)...");
-            using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            using var writer = new RdbWriter(fs);
-
-            writer.WriteHeader();
-            writer.WriteMetadata(mode);
-            writer.WriteDatabase(0, storage);
-            writer.WriteFooter();
+            using (var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var writer = new RdbWriter(fs))
+            {
+                writer.WriteHeader();
+                writer.WriteMetadata(mode);
+                writer.WriteDatabase(0, storage);
+                writer.WriteFooter();
+            }
 
             File.Move(tmpPath, _config.RdbFilePath, overwrite: true);
             Interlocked.Exchange(ref _lastSaveTime, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
@@ -126,19 +127,20 @@ public sealed class SnapshotCoordinator
                 Task.Run(() => SerializeShard(idx, shard))));
 
             // Aggregate: write header + all shard data + footer
-            using var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            using var writer = new RdbWriter(fs);
-
-            writer.WriteHeader();
-            writer.WriteMetadata(mode);
-
-            for (int i = 0; i < shardStreams.Length; i++)
+            using (var fs = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            using (var writer = new RdbWriter(fs))
             {
-                writer.WriteDatabase(i, shards[i]);
-                shardStreams[i].Dispose();
-            }
+                writer.WriteHeader();
+                writer.WriteMetadata(mode);
 
-            writer.WriteFooter();
+                for (int i = 0; i < shardStreams.Length; i++)
+                {
+                    writer.WriteDatabase(i, shards[i]);
+                    shardStreams[i].Dispose();
+                }
+
+                writer.WriteFooter();
+            }
 
             File.Move(tmpPath, _config.RdbFilePath, overwrite: true);
             Interlocked.Exchange(ref _lastSaveTime, DateTimeOffset.UtcNow.ToUnixTimeSeconds());

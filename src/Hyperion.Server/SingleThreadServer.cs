@@ -183,6 +183,7 @@ public sealed class SingleThreadServer
 
     private async Task ProcessClientAsync(PipeReader reader, PipeWriter writer, CancellationToken cancellationToken)
     {
+        bool askingNext = false;
         while (!cancellationToken.IsCancellationRequested)
         {
             var result = await reader.ReadAsync(cancellationToken);
@@ -196,6 +197,17 @@ public sealed class SingleThreadServer
                 {
                     if (command is not null)
                     {
+                        if (command.Cmd == "ASKING")
+                        {
+                            askingNext = true;
+                            writer.Write(RespEncoder.Encode("OK", isSimpleString: true));
+                            wroteAny = true;
+                            continue;
+                        }
+
+                        command.IsAsking = askingNext;
+                        askingNext = false;
+
                         var item = new WorkItem(command);
                         await _workChannel.Writer.WriteAsync(item, cancellationToken);
                         byte[] response = await item.Completion!.Task;

@@ -22,6 +22,11 @@ public class CommandExecutor : ICommandExecutor
     public Action? OnWriteCommand { get; set; }
 
     /// <summary>
+    /// Optional provider for cluster commands and hash slot routing.
+    /// </summary>
+    public IClusterProvider? ClusterProvider { get; set; }
+
+    /// <summary>
     /// Optional callback invoked when SAVE is requested.
     /// Returns true on success.
     /// </summary>
@@ -81,6 +86,78 @@ public class CommandExecutor : ICommandExecutor
             System.Threading.Thread.Sleep(TimeSpan.FromMicroseconds(DelayUs));
         }
 
+        // Intercept CLUSTER command
+        if (command.Cmd == "CLUSTER")
+        {
+            if (ClusterProvider == null)
+            {
+                return RespEncoder.Encode(new Exception("ERR This instance has cluster support disabled"));
+            }
+
+            if (command.Args.Length >= 2)
+            {
+                string sub = command.Args[0].ToUpperInvariant();
+                if (sub == "GETKEYSINSLOT")
+                {
+                    if (command.Args.Length != 3 || !int.TryParse(command.Args[1], out int slot) || !int.TryParse(command.Args[2], out int count))
+                        return RespEncoder.Encode(new Exception("ERR Invalid arguments for GETKEYSINSLOT"));
+
+                    var keys = new List<string>();
+                    foreach (var kv in _storage.DictStore.GetAllEntries())
+                    {
+                        if (ClusterProvider.GetSlotForKey(kv.Key) == slot)
+                        {
+                            keys.Add(kv.Key);
+                            if (keys.Count >= count) break;
+                        }
+                    }
+                    return RespEncoder.Encode(keys.ToArray());
+                }
+                else if (sub == "COUNTKEYSINSLOT")
+                {
+                    if (command.Args.Length != 2 || !int.TryParse(command.Args[1], out int slot))
+                        return RespEncoder.Encode(new Exception("ERR Invalid arguments for COUNTKEYSINSLOT"));
+
+                    int count = 0;
+                    foreach (var kv in _storage.DictStore.GetAllEntries())
+                    {
+                        if (ClusterProvider.GetSlotForKey(kv.Key) == slot) count++;
+                    }
+                    return RespEncoder.Encode(count, isSimpleString: false);
+                }
+            }
+
+            return ClusterProvider.ExecuteClusterCommand(command);
+        }
+
+        // Perform slot routing check if cluster is enabled and the command has keys
+        if (ClusterProvider != null && command.Args.Length > 0 && IsDataCommand(command.Cmd))
+        {
+            var key = command.Cmd == "MIGRATE" && command.Args.Length > 2 ? command.Args[2] : command.Args[0];
+            var (isMine, redirectNode, isAsk) = ClusterProvider.CheckSlotOwnership(key, command.IsAsking);
+            if (!isMine)
+            {
+                string prefix = isAsk ? "ASK" : "MOVED";
+                return RespEncoder.Encode(new Exception($"{prefix} {redirectNode}"));
+            }
+
+            // Cross-slot check for multi-key commands
+            if (command.Args.Length > 1)
+            {
+                int firstSlot = ClusterProvider.GetSlotForKey(key);
+                for (int i = 1; i < command.Args.Length; i++)
+                {
+                    if (IsKeyArg(command.Cmd, i))
+                    {
+                        if (ClusterProvider.GetSlotForKey(command.Args[i]) != firstSlot)
+                        {
+                            return RespEncoder.Encode(new Exception("CROSSSLOT Keys in request don't hash to the same slot"));
+                        }
+                    }
+                }
+            }
+        }
+
         var result = command.Cmd switch
         {
             "PING"     => _stringCommands.Ping(command.Args),
@@ -122,6 +199,7 @@ public class CommandExecutor : ICommandExecutor
             "BGSAVE"    => ExecuteBgSave(),
             "LASTSAVE"  => ExecuteLastSave(),
             "DBSIZE"    => ExecuteDbSize(),
+            "MIGRATE"   => ExecuteMigrate(command.Args),
 
             _ => RespEncoder.Encode(new Exception($"ERR unknown command '{command.Cmd}'"))
         };
@@ -168,5 +246,80 @@ public class CommandExecutor : ICommandExecutor
     {
         var activeExpiry = new ActiveExpiry(_storage);
         activeExpiry.DeleteExpiredKeys();
+    }
+
+    private byte[] ExecuteMigrate(string[] args)
+    {
+        // MIGRATE host port key "" timeout
+        // (For simplicity we ignore destination DB, copy/replace flags for now)
+        if (args.Length < 4) return RespEncoder.Encode(new Exception("ERR wrong number of arguments for 'migrate' command"));
+        
+        string host = args[0];
+        if (!int.TryParse(args[1], out int port)) return RespEncoder.Encode(new Exception("ERR invalid port"));
+        string key = args[2];
+        if (!int.TryParse(args[4], out int timeout)) timeout = 1000;
+
+        var obj = _storage.DictStore.Get(key);
+        if (obj == null)
+            return RespEncoder.Encode(new Exception("ERR no such key"));
+
+        // Currently we only serialize Strings in MIGRATE for simplicity.
+        // For full support we'd serialize other data types.
+        if (!(obj.Value is string val))
+            return RespEncoder.Encode(new Exception("ERR only string values are supported for MIGRATE currently"));
+
+        long ttlMs = 0; // standard MIGRATE uses 0 if no TTL
+        var expiryDict = _storage.DictStore.GetExpireDictStore();
+        if (expiryDict.TryGetValue(key, out long expireAt))
+        {
+            long remain = expireAt - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            ttlMs = remain > 0 ? remain : 0;
+        }
+
+        try
+        {
+            using var client = new System.Net.Sockets.TcpClient(host, port);
+            using var stream = client.GetStream();
+            stream.ReadTimeout = timeout;
+            stream.WriteTimeout = timeout;
+
+            // Send standard RESTORE command
+            // Note: Redis RESTORE format is specific (RDB encoded). We'll just use SET with PX for simplicity,
+            // as this is a Hyperion-to-Hyperion internal thing and we haven't built an RDB item serializer.
+            // Wait, SET doesn't support other types. Since we restricted to strings, SET works.
+            var cmdBytes = System.Text.Encoding.UTF8.GetBytes($"*4\r\n$3\r\nSET\r\n${key.Length}\r\n{key}\r\n${val.Length}\r\n{val}\r\n$2\r\nPX\r\n${ttlMs.ToString().Length}\r\n{ttlMs}\r\n");
+            if (ttlMs == 0)
+                cmdBytes = System.Text.Encoding.UTF8.GetBytes($"*3\r\n$3\r\nSET\r\n${key.Length}\r\n{key}\r\n${val.Length}\r\n{val}\r\n");
+            
+            stream.Write(cmdBytes, 0, cmdBytes.Length);
+
+            var resBuf = new byte[1024];
+            int read = stream.Read(resBuf, 0, resBuf.Length);
+            string res = System.Text.Encoding.UTF8.GetString(resBuf, 0, read);
+
+            if (!res.StartsWith("+OK"))
+                return RespEncoder.Encode(new Exception("ERR migration failed: target rejected"));
+
+            // Success, delete locally
+            _storage.DictStore.Del(key);
+            return RespEncoder.Encode("OK", isSimpleString: true);
+        }
+        catch (Exception ex)
+        {
+            return RespEncoder.Encode(new Exception($"ERR migration failed: {ex.Message}"));
+        }
+    }
+
+    private bool IsDataCommand(string cmd)
+    {
+        return cmd != "PING" && cmd != "INFO" && cmd != "SAVE" && cmd != "BGSAVE" && cmd != "LASTSAVE" && cmd != "DBSIZE";
+    }
+
+    private bool IsKeyArg(string cmd, int argIndex)
+    {
+        // Currently, only DEL takes multiple keys. Other commands take a single key at index 0.
+        // MGET, MSET etc. are not yet implemented.
+        if (cmd == "DEL") return true;
+        return argIndex == 0;
     }
 }

@@ -16,11 +16,9 @@ public class PingIntegrationTests : IDisposable
     public PingIntegrationTests()
     {
         _port = 3000 + Random.Shared.Next(1, 10000);
-
-        var executor = new CommandExecutor();
         var logger = NullLogger<SingleThreadServer>.Instance;
 
-        _server = new SingleThreadServer(executor, logger, _port);
+        _server = new SingleThreadServer(logger, _port);
         _cts = new CancellationTokenSource();
         _serverTask = _server.RunAsync(_cts.Token);
 

@@ -21,6 +21,7 @@ public class IOHandler
     private readonly int _id;
     private readonly HyperionServer _server;
     private readonly ILogger<IOHandler> _logger;
+    private bool _askingNext = false;
 
     public IOHandler(int id, HyperionServer server, ILogger<IOHandler> logger)
     {
@@ -75,6 +76,17 @@ public class IOHandler
                 {
                     if (command is not null)
                     {
+                        if (command.Cmd == "ASKING")
+                        {
+                            _askingNext = true;
+                            writer.Write(RespEncoder.Encode("OK", isSimpleString: true));
+                            wroteAny = true;
+                            continue;
+                        }
+
+                        command.IsAsking = _askingNext;
+                        _askingNext = false;
+
                         var task = new WorkerTask(command);
                         await _server.DispatchAsync(task);
                         byte[] responseBytes = await task.ReplyCompletion.Task;

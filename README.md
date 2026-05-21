@@ -37,6 +37,7 @@ For the algorithm breakdown, Redis equivalence, and complexity analysis of each 
 | Bloom Filter | `BF.RESERVE`, `BF.MADD`, `BF.EXISTS` |
 | Count-Min Sketch | `CMS.INITBYDIM`, `CMS.INITBYPROB`, `CMS.INCRBY`, `CMS.QUERY` |
 | Persistence | `SAVE`, `BGSAVE`, `LASTSAVE`, `DBSIZE` |
+| Cluster | `CLUSTER INFO`, `CLUSTER NODES`, `CLUSTER MEET`, `CLUSTER ADDSLOTS`, `CLUSTER KEYSLOT`, `CLUSTER SETSLOT`, `CLUSTER GETKEYSINSLOT`, `CLUSTER COUNTKEYSINSLOT`, `MIGRATE`, `ASKING` |
 
 **Server modes:**
 - **Single-threaded** — Follows Redis's original event-loop architecture. One dedicated OS thread owns all command execution. Async IO handlers feed commands through a lock-free `Channel`. Responses are batched with `PipeWriter` — one flush per read batch.
@@ -50,6 +51,15 @@ For the algorithm breakdown, Redis equivalence, and complexity analysis of each 
 - Final save on graceful shutdown — data is never lost across restarts
 - Custom binary format with **CRC64** integrity check; all types (including Bloom Filter and Count-Min Sketch) are persisted
 - **Atomic write**: written to a `.tmp` file first, then renamed — an OS crash never corrupts the previous snapshot
+
+**Redis Cluster Protocol** — Master-only clustering with dynamic slot routing:
+- Full cluster bus binary protocol on port+10000 with gossip-based node discovery
+- `CRC16(key) % 16384` hashing with `{hash tag}` support for deterministic routing
+- Zero-downtime Live Slot Migration (`MIGRATE`, `CLUSTER SETSLOT`, `ASKING` support)
+- Persistent topology state natively written and recovered via `nodes.conf`
+- Returns `-MOVED` and `-ASK` redirects for clients pointing to the wrong node
+- Built-in two-phase distributed failure detection (`PFAIL` → `FAIL` consensus)
+- Fully compatible with `redis-cli -c` and cluster-aware client libraries
 
 ---
 
@@ -219,6 +229,29 @@ OK
 (integer) 0
 ```
 
+### Running in Cluster Mode
+
+To enable Redis Cluster mode and test gossip/redirection:
+
+```bash
+# Start three instances
+./Hyperion.Server --port 7000 --cluster-enabled yes
+./Hyperion.Server --port 7001 --cluster-enabled yes
+./Hyperion.Server --port 7002 --cluster-enabled yes
+
+# Form the cluster
+redis-cli -p 7000 CLUSTER MEET 127.0.0.1 7001
+redis-cli -p 7000 CLUSTER MEET 127.0.0.1 7002
+
+# Assign hash slots
+redis-cli -p 7000 CLUSTER ADDSLOTS {0..5460}
+redis-cli -p 7001 CLUSTER ADDSLOTS {5461..10922}
+redis-cli -p 7002 CLUSTER ADDSLOTS {10923..16383}
+
+# Connect with cluster-aware client
+redis-cli -c -p 7000 SET foo bar
+```
+
 ## Run Tests
 
 ```bash
@@ -249,6 +282,7 @@ Full methodology, latency breakdown, pain points, and delay-workload analysis in
 
 ## What's Next
 
-- [ ] Redis Cluster protocol
+- [x] Cluster: Live Slot Migration (`SETSLOT`, `MIGRATE`)
+- [ ] Cluster: Replica nodes and automatic failover
 - [ ] `ArrayPool<byte>` for response buffers to reduce GC pressure
 - [ ] Pre-cached static RESP responses (`+OK`, `:1`, `$-1`) to eliminate hot-path encoding

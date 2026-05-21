@@ -5,6 +5,7 @@
     <ProjectReference Include="..\Hyperion.Protocol\Hyperion.Protocol.csproj" />
     <ProjectReference Include="..\Hyperion.Config\Hyperion.Config.csproj" />
     <ProjectReference Include="..\Hyperion.Persistence\Hyperion.Persistence.csproj" />
+    <ProjectReference Include="..\Hyperion.Cluster\Hyperion.Cluster.csproj" />
   </ItemGroup>
 
   <ItemGroup>

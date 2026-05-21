@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Hyperion.Persistence;
+using Hyperion.Cluster;
 using Hyperion.Server;
 using Microsoft.Extensions.Logging;
 
@@ -18,6 +19,9 @@ class Program
         LogLevel minLog = LogLevel.Warning;
         int delayUs    = 0;
         bool noSave    = false;
+        
+        bool clusterEnabled = false;
+        string clusterConfigFile = "nodes.conf";
 
         // Persistence defaults
         string dbFilename = "dump.rdb";
@@ -33,6 +37,8 @@ class Program
             if (args[i] == "--log"        && Enum.TryParse(args[i + 1], true, out LogLevel level)) minLog = level;
             if (args[i] == "--dbfilename")                                                   dbFilename = args[i + 1];
             if (args[i] == "--dir")                                                          dbDir      = args[i + 1];
+            if (args[i] == "--cluster-enabled" && args[i + 1].ToLower() == "yes")            clusterEnabled = true;
+            if (args[i] == "--cluster-config-file")                                          clusterConfigFile = args[i + 1];
         }
         if (Array.Exists(args, a => a == "--no-save")) noSave = true;
 
@@ -68,6 +74,12 @@ class Program
         {
             if (mode == "single")
             {
+                if (clusterEnabled)
+                {
+                    logger.LogCritical("Cluster mode is not supported in single-thread mode.");
+                    return 1;
+                }
+                
                 var server = new SingleThreadServer(
                     loggerFactory.CreateLogger<SingleThreadServer>(),
                     port,
@@ -77,9 +89,52 @@ class Program
             }
             else
             {
+                ClusterState? clusterState = null;
+                ClusterBus? clusterBus = null;
+                GossipEngine? gossipEngine = null;
+
+                if (clusterEnabled)
+                {
+                    clusterState = ClusterState.LoadConfig(clusterConfigFile);
+                    if (clusterState == null)
+                    {
+                        string myId = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N").Substring(0, 8); // 40 chars
+                        clusterState = new ClusterState(myId);
+                        clusterState.Myself.Ip = "127.0.0.1";
+                        clusterState.Myself.Port = port;
+                        clusterState.Myself.ClusterBusPort = port + 10000;
+                        clusterState.SaveConfig(clusterConfigFile);
+                    }
+                    else
+                    {
+                        // Ensure IP/Ports are updated
+                        clusterState.Myself.Ip = "127.0.0.1";
+                        clusterState.Myself.Port = port;
+                        clusterState.Myself.ClusterBusPort = port + 10000;
+                    }
+
+                    clusterState.SaveConfigCallback = () => clusterState.SaveConfig(clusterConfigFile);
+                    
+                    gossipEngine = new GossipEngine(clusterState, loggerFactory.CreateLogger<GossipEngine>());
+                    clusterBus = new ClusterBus(clusterState, gossipEngine, loggerFactory.CreateLogger<ClusterBus>());
+                    gossipEngine.SetBus(clusterBus);
+                    
+                    clusterBus.Start();
+                    gossipEngine.Start();
+                }
+
                 var server = new HyperionServer(
-                    loggerFactory, port, workers, ioHandlers, delayUs, persistenceConfig);
-                await server.RunAsync(cts.Token);
+                    loggerFactory, port, workers, ioHandlers, delayUs, persistenceConfig, clusterState);
+                
+                try
+                {
+                    await server.RunAsync(cts.Token);
+                }
+                finally
+                {
+                    gossipEngine?.Stop();
+                    clusterBus?.Stop();
+                }
             }
         }
         catch (OperationCanceledException)

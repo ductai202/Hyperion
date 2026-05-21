@@ -5,7 +5,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hyperion.Core;
+using Hyperion.Core;
 using Hyperion.Persistence;
+using Hyperion.Cluster;
 using Microsoft.Extensions.Logging;
 
 namespace Hyperion.Server;
@@ -36,6 +38,8 @@ public sealed class HyperionServer
     private readonly int _numIOHandlers;
 
     private readonly SnapshotCoordinator _snapshot;
+    private readonly ClusterState? _clusterState;
+    private readonly ClusterProvider? _clusterProvider;
 
     private int _nextIOHandlerIndex = 0;
     private TcpListener? _listener;
@@ -46,19 +50,25 @@ public sealed class HyperionServer
         int numWorkers = 0,
         int numIOHandlers = 0,
         int delayUs = 0,
-        PersistenceConfig? persistenceConfig = null)
+        PersistenceConfig? persistenceConfig = null,
+        ClusterState? clusterState = null)
     {
         _loggerFactory = loggerFactory;
         _logger = loggerFactory.CreateLogger<HyperionServer>();
         _port   = port;
+        _clusterState = clusterState;
+        if (_clusterState != null)
+        {
+            _clusterProvider = new ClusterProvider(_clusterState);
+        }
 
         int processorCount = Environment.ProcessorCount;
         _numWorkers    = numWorkers    > 0 ? numWorkers    : Math.Max(1, processorCount / 2);
         _numIOHandlers = numIOHandlers > 0 ? numIOHandlers : Math.Max(1, processorCount / 2);
 
         _logger.LogInformation(
-            "Initializing Multi-Threaded Server. Workers: {Workers}, IO Handlers: {IOHandlers}",
-            _numWorkers, _numIOHandlers);
+            "Initializing Multi-Threaded Server. Workers: {Workers}, IO Handlers: {IOHandlers}, Cluster: {ClusterEnabled}",
+            _numWorkers, _numIOHandlers, _clusterState != null);
 
         var config = persistenceConfig ?? new PersistenceConfig();
         _snapshot = new SnapshotCoordinator(
@@ -110,6 +120,10 @@ public sealed class HyperionServer
             executor.GetLastSaveTime  = () => _snapshot.LastSaveTime;
             executor.OnSave           = () => SaveAllSync();
             executor.OnBgSave         = () => SaveAllAsync();
+            if (_clusterProvider != null)
+            {
+                executor.ClusterProvider = _clusterProvider;
+            }
         }
     }
 
@@ -163,7 +177,9 @@ public sealed class HyperionServer
     /// </summary>
     public async ValueTask DispatchAsync(WorkerTask task)
     {
-        if (task.Command.Cmd == "DEL" && task.Command.Args.Length > 1)
+        // In cluster mode, multi-key commands must map to the same slot, which means they map to the same partition.
+        // We let CommandExecutor handle the CROSSSLOT error if they don't.
+        if (_clusterProvider == null && task.Command.Cmd == "DEL" && task.Command.Args.Length > 1)
         {
             var groups = task.Command.Args.GroupBy(GetPartitionId).ToList();
 
@@ -215,15 +231,38 @@ public sealed class HyperionServer
         }
         else
         {
-            int workerId = task.Command.Args.Length > 0
-                ? GetPartitionId(task.Command.Args[0])
-                : Random.Shared.Next(_numWorkers);
+            int workerId;
+            string cmd = task.Command.Cmd.ToUpperInvariant();
+            if (cmd == "CLUSTER" && task.Command.Args.Length >= 2 && 
+                (task.Command.Args[0].ToUpperInvariant() == "GETKEYSINSLOT" || 
+                 task.Command.Args[0].ToUpperInvariant() == "COUNTKEYSINSLOT"))
+            {
+                if (int.TryParse(task.Command.Args[1], out int slot))
+                    workerId = slot % _numWorkers;
+                else
+                    workerId = Random.Shared.Next(_numWorkers);
+            }
+            else
+            {
+                string routingKey = task.Command.Args.Length > 0 ? task.Command.Args[0] : "";
+                if (cmd == "MIGRATE" && task.Command.Args.Length > 2) routingKey = task.Command.Args[2];
+
+                workerId = string.IsNullOrEmpty(routingKey)
+                    ? Random.Shared.Next(_numWorkers)
+                    : GetPartitionId(routingKey);
+            }
             await _workers[workerId].EnqueueTaskAsync(task);
         }
     }
 
     private int GetPartitionId(string key)
     {
+        if (_clusterState != null)
+        {
+            int slot = ClusterState.GetSlotForKey(key);
+            return slot % _numWorkers;
+        }
+
         int start = key.IndexOf('{');
         if (start != -1)
         {

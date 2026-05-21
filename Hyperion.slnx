@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Hyperion.Cluster/Hyperion.Cluster.csproj" />
     <Project Path="src/Hyperion.Config/Hyperion.Config.csproj" />
     <Project Path="src/Hyperion.Core/Hyperion.Core.csproj" />
     <Project Path="src/Hyperion.DataStructures/Hyperion.DataStructures.csproj" />
@@ -8,8 +9,10 @@
     <Project Path="src/Hyperion.Server/Hyperion.Server.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Hyperion.Cluster.Tests/Hyperion.Cluster.Tests.csproj" />
     <Project Path="tests/Hyperion.Core.Tests/Hyperion.Core.Tests.csproj" />
     <Project Path="tests/Hyperion.DataStructures.Tests/Hyperion.DataStructures.Tests.csproj" />
+    <Project Path="tests/Hyperion.Persistence.Tests/Hyperion.Persistence.Tests.csproj" />
     <Project Path="tests/Hyperion.Protocol.Tests/Hyperion.Protocol.Tests.csproj" />
     <Project Path="tests/Hyperion.Server.Tests/Hyperion.Server.Tests.csproj" />
   </Folder>
