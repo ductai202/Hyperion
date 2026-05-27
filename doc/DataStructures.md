@@ -30,7 +30,9 @@ CoarseClock (static)
 
 Dict (one private instance per Worker — share-nothing, no locks needed)
 ├── _store:        Dictionary<string, DictObject>   ← Main key → value store
-└── _expiryStore:  Dictionary<string, long>         ← Key → expiry timestamp (ms)
+├── _expiryStore:  Dictionary<string, long>         ← Key → expiry timestamp (ms)
+├── _keyList:      List<string>                     ← Continuous list of active keys (for O(1) random key sampling)
+└── _keyIndexMap:  Dictionary<string, int>          ← Key to index in _keyList (enables O(1) Swap-and-Pop deletion)
 
 DictObject
 ├── Key: string
@@ -39,8 +41,11 @@ DictObject
 ```
 
 ### How It Works
-- **SET** creates a `DictObject` using `CoarseClock.NowMs` as the initial `LastAccessTime` and stores it. If a TTL is specified, the expiry time (`CoarseClock.NowMs + ttlMs`) is recorded in `_expiryStore`.
+- **SET** creates a `DictObject` using `CoarseClock.NowMs` as the initial `LastAccessTime` and stores it. If the key is new, it is appended to `_keyList` and its index is mapped in `_keyIndexMap` in $O(1)$. If a TTL is specified, the expiry time is recorded in `_expiryStore`.
 - **GET** retrieves the object and updates `LastAccessTime` to `CoarseClock.NowMs` (LRU touch).
+- **PEEK** retrieves the object **without** modifying `LastAccessTime`. This is a critical performance and correctness optimization used during eviction sampling to avoid inadvertently "rescuing" sampled candidate keys (which would reset their idle time).
+- **DEL** deletes the key from `_store` and `_expiryStore`. To keep `_keyList` packed without holes in $O(1)$ time complexity, we perform **Swap-and-Pop**: we swap the key-to-be-deleted with the *last* key in `_keyList`, update the index map of the swapped key, and then perform `RemoveAt(last_index)`. This avoids expensive $O(N)$ array-shifting.
+- **GET RANDOM KEY** retrieves a random key in $O(1)$ by picking a random index using `Random.Shared.Next(_keyList.Count)` and looking it up in `_keyList`.
 - **Expiry Check** (`HasExpired`): Before returning a value, we compare `CoarseClock.NowMs` against the stored expiry. If expired, the key is lazily deleted and `nil` is returned.
 
 ### CoarseClock
@@ -97,11 +102,16 @@ Our `Dict` mirrors this exact pattern — `_store` is the keyspace, `_expiryStor
 ### What It Does
 When the database reaches its memory limit, Hyperion must evict keys. Instead of maintaining a full LRU linked list (expensive), Redis uses a **sampling-based approximate LRU** approach. The Eviction Pool is the sorting buffer for sampled candidates.
 
-### How It Works (The Algorithm)
-
-1. **Sampling**: Periodically, N random keys are sampled from the keyspace.
-2. **Insertion**: Each sampled key's `LastAccessTime` is compared against the current pool. If the key is "older" (less recently accessed) than the newest item in the pool, it replaces it.
-3. **Eviction**: When memory pressure triggers eviction, the **oldest** item in the pool (position 0) is removed and its key is deleted from the database.
+### How It Works (The Active Eviction Pipeline)
+Hyperion performs active memory-constrained eviction on the main command execution loop:
+1. **Thread-Safe Local Caps**: When a write command that could increase key space (e.g. `SET`, `HSET`, `LPUSH`) enters `CommandExecutor`, it checks the key count. Since Hyperion uses a multi-threaded Share-Nothing architecture, memory limits are checked locally on the thread without locks:
+   `shardLimit = MaxKeyNumber / ListenerNumber`.
+2. **Active Eviction Loop**: If the local shard's key count exceeds or reaches `shardLimit`, Hyperion runs an eviction loop:
+   - **O(1) sampling**: It randomly selects `EpoolLruSampleSize` keys using `Dict.GetRandomKey()`.
+   - **Non-touch Peeking**: It reads the `LastAccessTime` of each candidate key using `Dict.Peek()` (preventing sampling from resetting their idle time).
+   - **Pool Sorting**: It pushes candidates into `EvictionPool`, keeping it sorted (oldest first).
+   - **Pop and Delete**: It pops the oldest candidate from the pool and calls `Dict.Del()` (which uses $O(1)$ Swap-and-Pop to clean up lists).
+   - The loop repeats until the local key count drops below the shard limit.
 
 ```
 Pool (sorted by LastAccessTime, oldest first):

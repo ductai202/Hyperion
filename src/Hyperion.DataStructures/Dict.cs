@@ -45,6 +45,17 @@ public class Dict
 {
     private readonly Dictionary<string, DictObject> _store = new();
     private readonly Dictionary<string, long> _expiryStore = new();
+    private readonly List<string> _keyList = new();
+    private readonly Dictionary<string, int> _keyIndexMap = new();
+
+    public int Count => _store.Count;
+
+    public string? GetRandomKey()
+    {
+        if (_keyList.Count == 0) return null;
+        int idx = Random.Shared.Next(_keyList.Count);
+        return _keyList[idx];
+    }
 
     public DictObject NewObj(string key, string value, long ttlMs)
     {
@@ -65,6 +76,8 @@ public class Dict
         if (!_store.ContainsKey(key))
         {
             Stats.HashKeySpaceStat.IncrementKey();
+            _keyList.Add(key);
+            _keyIndexMap[key] = _keyList.Count - 1;
         }
         _store[key] = obj;
     }
@@ -79,6 +92,15 @@ public class Dict
         return null;
     }
 
+    public DictObject? Peek(string key)
+    {
+        if (_store.TryGetValue(key, out var obj))
+        {
+            return obj;
+        }
+        return null;
+    }
+
     public bool Del(string key)
     {
         bool removed = _store.Remove(key);
@@ -88,6 +110,19 @@ public class Dict
             if (_expiryStore.Remove(key))
             {
                 Stats.HashKeySpaceStat.DecrementExpires();
+            }
+
+            if (_keyIndexMap.TryGetValue(key, out int index))
+            {
+                int lastIndex = _keyList.Count - 1;
+                if (index != lastIndex)
+                {
+                    string lastKey = _keyList[lastIndex];
+                    _keyList[index] = lastKey;
+                    _keyIndexMap[lastKey] = index;
+                }
+                _keyList.RemoveAt(lastIndex);
+                _keyIndexMap.Remove(key);
             }
         }
         return removed;

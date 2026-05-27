@@ -94,4 +94,55 @@ public class StringCommandsTests
         Assert.Contains("# Memory", infoRes);
         Assert.Contains("# Keyspace", infoRes);
     }
+
+    [Fact]
+    public void LruEviction_ShouldEvictOldestKey()
+    {
+        int originalMaxKeys = Config.ServerConfig.MaxKeyNumber;
+        int originalListeners = Config.ServerConfig.ListenerNumber;
+        string originalPolicy = Config.ServerConfig.EvictionPolicy;
+        int originalSampleSize = Config.ServerConfig.EpoolLruSampleSize;
+
+        try
+        {
+            Config.ServerConfig.MaxKeyNumber = 5;
+            Config.ServerConfig.ListenerNumber = 1;
+            Config.ServerConfig.EvictionPolicy = "allkeys-lru";
+            Config.ServerConfig.EpoolLruSampleSize = 20;
+
+            var localExecutor = new CommandExecutor();
+
+            string Exec(string cmd, params string[] args)
+            {
+                var command = new RespCommand { Cmd = cmd, Args = args };
+                var responseBytes = localExecutor.Execute(command);
+                return Encoding.UTF8.GetString(responseBytes);
+            }
+
+            for (int i = 1; i <= 5; i++)
+            {
+                Exec("SET", $"key_{i}", $"value_{i}");
+                Thread.Sleep(15);
+            }
+
+            Exec("GET", "key_1");
+
+            Exec("SET", "key_6", "value_6");
+
+            var get2 = Exec("GET", "key_2");
+            var get1 = Exec("GET", "key_1");
+            var get6 = Exec("GET", "key_6");
+
+            Assert.Equal("$-1\r\n", get2);
+            Assert.Equal("$7\r\nvalue_1\r\n", get1);
+            Assert.Equal("$7\r\nvalue_6\r\n", get6);
+        }
+        finally
+        {
+            Config.ServerConfig.MaxKeyNumber = originalMaxKeys;
+            Config.ServerConfig.ListenerNumber = originalListeners;
+            Config.ServerConfig.EvictionPolicy = originalPolicy;
+            Config.ServerConfig.EpoolLruSampleSize = originalSampleSize;
+        }
+    }
 }

@@ -1,5 +1,7 @@
 using Hyperion.Core.Commands;
 using Hyperion.Protocol;
+using Hyperion.Config;
+using Hyperion.DataStructures;
 
 namespace Hyperion.Core;
 
@@ -13,6 +15,8 @@ public class CommandExecutor : ICommandExecutor
     private readonly CmsCommands _cmsCommands;
     private readonly HashCommands _hashCommands;
     private readonly ListCommands _listCommands;
+
+    public Storage Storage => _storage;
 
     /// <summary>
     /// Optional callback invoked after every write command.
@@ -79,12 +83,25 @@ public class CommandExecutor : ICommandExecutor
         "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY"
     ];
 
+    private static readonly HashSet<string> EvictTriggerCmds =
+    [
+        "SET", "INCR", "DECR",
+        "HSET",
+        "LPUSH", "RPUSH",
+        "SADD",
+        "ZADD",
+        "BF.RESERVE", "BF.MADD",
+        "CMS.INITBYDIM", "CMS.INITBYPROB", "CMS.INCRBY"
+    ];
+
     public byte[] Execute(RespCommand command)
     {
         if (DelayUs > 0)
         {
             System.Threading.Thread.Sleep(TimeSpan.FromMicroseconds(DelayUs));
         }
+
+        PerformEvictionIfNeeded(command.Cmd);
 
         // Intercept CLUSTER command
         if (command.Cmd == "CLUSTER")
@@ -321,5 +338,42 @@ public class CommandExecutor : ICommandExecutor
         // MGET, MSET etc. are not yet implemented.
         if (cmd == "DEL") return true;
         return argIndex == 0;
+    }
+
+    private void PerformEvictionIfNeeded(string cmd)
+    {
+        if (ServerConfig.EvictionPolicy == "noeviction") return;
+        if (!EvictTriggerCmds.Contains(cmd)) return;
+
+        int numWorkers = Math.Max(1, ServerConfig.ListenerNumber);
+        int shardLimit = ServerConfig.MaxKeyNumber / numWorkers;
+
+        while (_storage.DictStore.Count >= shardLimit)
+        {
+            var pool = new EvictionPool();
+
+            int sampleCount = ServerConfig.EpoolLruSampleSize;
+            for (int i = 0; i < sampleCount; i++)
+            {
+                string? randomKey = _storage.DictStore.GetRandomKey();
+                if (randomKey == null) break;
+
+                var obj = _storage.DictStore.Peek(randomKey);
+                if (obj != null)
+                {
+                    pool.Push(randomKey, obj.LastAccessTime);
+                }
+            }
+
+            var oldest = pool.Pop();
+            if (oldest != null)
+            {
+                _storage.DictStore.Del(oldest.Key);
+            }
+            else
+            {
+                break;
+            }
+        }
     }
 }
