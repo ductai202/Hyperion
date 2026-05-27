@@ -21,6 +21,14 @@ public class Worker
     // Channel is a thread-safe queue for async consumer-producer patterns
     private readonly Channel<WorkerTask> _taskChannel;
 
+    /// <summary>
+    /// How many commands to process between active-expiry sweeps.
+    /// Redis runs expiry checks once per event-loop iteration (~100 commands).
+    /// We use a similar cadence to keep expired keys from accumulating.
+    /// </summary>
+    private const int ActiveExpiryInterval = 100;
+    private int _commandsSinceExpiry = 0;
+
     public Worker(int id, int bufferSize = 1024, int delayUs = 0)
     {
         Id = id;
@@ -76,6 +84,13 @@ public class Worker
                     _storage.IncrementDirty();
 
                     // Notify the waiting IO handler that the result is ready
+                    // Periodic active expiry sweep — delete stale expired keys
+                    // in the background so they don't accumulate between client accesses.
+                    if (++_commandsSinceExpiry >= ActiveExpiryInterval)
+                    {
+                        _commandsSinceExpiry = 0;
+                        _executor.RunActiveExpiry();
+                    }
                     task.ReplyCompletion.TrySetResult(response);
                 }
             }

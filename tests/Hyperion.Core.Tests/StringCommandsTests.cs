@@ -96,6 +96,20 @@ public class StringCommandsTests
     }
 
     [Fact]
+    public void Keys_ShouldReturnMatchingLiveKeys()
+    {
+        ExecuteStringCommand("SET", "keys:user:1", "Alice");
+        ExecuteStringCommand("SET", "keys:user:2", "Bob");
+        ExecuteStringCommand("SET", "keys:session:1", "token");
+
+        var keysRes = ExecuteStringCommand("KEYS", "keys:user:*");
+
+        Assert.Contains("$11\r\nkeys:user:1\r\n", keysRes);
+        Assert.Contains("$11\r\nkeys:user:2\r\n", keysRes);
+        Assert.DoesNotContain("keys:session:1", keysRes);
+    }
+
+    [Fact]
     public void LruEviction_ShouldEvictOldestKey()
     {
         int originalMaxKeys = Config.ServerConfig.MaxKeyNumber;

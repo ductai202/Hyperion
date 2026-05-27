@@ -164,4 +164,92 @@ public class Dict
     {
         return _store;
     }
+
+    /// <summary>
+    /// Returns all currently live (non-expired) keys matching the given glob pattern.
+    /// Expired keys are lazily deleted on-the-fly during this scan — same as Redis KEYS behavior.
+    /// Pattern supports: '*' (any chars), '?' (one char), '[abc]' (char class).
+    /// </summary>
+    public List<string> GetLiveKeys(string pattern)
+    {
+        var result = new List<string>();
+        // snapshot to avoid mutation-during-iteration when Del() is called below
+        var snapshot = new List<string>(_keyList);
+        long nowMs = CoarseClock.NowMs;
+
+        foreach (var key in snapshot)
+        {
+            // Lazy-delete expired keys found during scan
+            if (_expiryStore.TryGetValue(key, out long expiry) && nowMs > expiry)
+            {
+                Del(key);
+                continue;
+            }
+
+            if (GlobMatch(pattern, key))
+                result.Add(key);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Simple glob-style pattern matching. Supports '*', '?', and '[...]' character classes.
+    /// Ported from Redis's stringmatchlen() in util.c.
+    /// </summary>
+    private static bool GlobMatch(string pattern, string str)
+    {
+        int p = 0, s = 0;
+        while (p < pattern.Length && s < str.Length)
+        {
+            char pc = pattern[p];
+            if (pc == '*')
+            {
+                // Skip consecutive stars
+                while (p < pattern.Length && pattern[p] == '*') p++;
+                if (p == pattern.Length) return true;
+                while (s < str.Length)
+                {
+                    if (GlobMatch(pattern[p..], str[s..])) return true;
+                    s++;
+                }
+                return false;
+            }
+            else if (pc == '?')
+            {
+                p++; s++;
+            }
+            else if (pc == '[')
+            {
+                p++; // skip '['
+                bool not = p < pattern.Length && pattern[p] == '^';
+                if (not) p++;
+                bool matched = false;
+                while (p < pattern.Length && pattern[p] != ']')
+                {
+                    if (p + 2 < pattern.Length && pattern[p + 1] == '-')
+                    {
+                        if (str[s] >= pattern[p] && str[s] <= pattern[p + 2])
+                            matched = true;
+                        p += 3;
+                    }
+                    else
+                    {
+                        if (str[s] == pattern[p]) matched = true;
+                        p++;
+                    }
+                }
+                if (p < pattern.Length) p++; // skip ']'
+                if (matched == not) return false;
+                s++;
+            }
+            else
+            {
+                if (pc != str[s]) return false;
+                p++; s++;
+            }
+        }
+        // Skip trailing stars
+        while (p < pattern.Length && pattern[p] == '*') p++;
+        return p == pattern.Length && s == str.Length;
+    }
 }

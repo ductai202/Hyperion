@@ -113,10 +113,12 @@ Worker 1 (owns shard 1) ──→ snapshot shard 1    → SnapshotCoordinator �
 Worker N (owns shard N) ──→ snapshot shard N
 ```
 
-The `SnapshotCoordinator` calls `SaveShardsAsync()`:
-1. Takes a snapshot of the `Storage` reference for each Worker.
-2. Reads each shard concurrently in a background Task (`Task.WhenAll`). Because each Worker's storage is exclusively owned by that Worker's thread, reading it from a background thread is safe as long as the snapshot precedes any further writes — the share-nothing guarantee ensures no other thread is writing to it.
-3. Writes all shards into a single `.tmp` file, then atomically renames it.
+The current `SnapshotCoordinator.SaveShardsAsync()` implementation:
+1. Collects the `Storage` reference for each Worker.
+2. Starts background `Task.Run` serialization work for each shard.
+3. Writes the combined RDB file from the live shard references, then atomically renames the `.tmp` file.
+
+This matches the code currently in `SnapshotCoordinator`, but it is weaker than the ideal share-nothing snapshot design: the save path does not yet enqueue a snapshot marker into each Worker's channel before reading that Worker's shard, and the temporary per-shard streams produced by `SerializeShard()` are not used by the final writer. That means concurrent writes can overlap with multi-thread `BGSAVE`/periodic saves. The intended next step is to serialize each shard on its owning Worker event loop, then aggregate immutable shard buffers in the background.
 
 On load, `RdbReader.LoadSharded()` reads the file and distributes each key to the correct shard using FNV-1a hash — the same routing function used by the live server. This ensures every key after a restart lands on the same Worker it would have for a fresh `SET`.
 
@@ -156,12 +158,14 @@ Configured in `PersistenceConfig.SavePolicies` as a list of `(afterSeconds, ifAt
 | `LASTSAVE` | Returns Unix timestamp of the last successful save. |
 | `DBSIZE` | Returns the total number of tracked keys. |
 
+`DBSIZE` currently reads the global keyspace stats counter. Expired keys may remain counted until they are removed by lazy access/scan or by active expiry in the event loops.
+
 ---
 
 ## Key Design Decisions
 
 ### Why not fork() like Redis?
-`fork()` + Copy-on-Write is Linux-only and incompatible with .NET's GC. The GC maintains internal write barriers and thread-safety structures that break under `fork()`. Hyperion instead leverages its **share-nothing** architecture: each Worker owns a completely private shard, so no process-level copy is needed — a background read of a private shard achieves the same zero-contention goal.
+`fork()` + Copy-on-Write is Linux-only and incompatible with .NET's GC. The GC maintains internal write barriers and thread-safety structures that break under `fork()`. Hyperion instead relies on its **share-nothing** architecture and custom RDB writer. The current multi-thread save implementation still reads live shard references from background tasks; moving shard serialization onto each owning Worker event loop is the remaining step needed to fully preserve the zero-contention snapshot model.
 
 ### Why CRC64 over CRC32?
 At 1 billion keys, the probability of an undetected CRC32 collision is ~1 in 4 billion (~0.000000023%). CRC64 reduces that to negligible. The cost is 8 bytes vs 4 bytes at the end of the file — negligible.

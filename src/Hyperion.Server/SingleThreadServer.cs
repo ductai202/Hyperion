@@ -37,6 +37,8 @@ public sealed class SingleThreadServer
     private readonly SnapshotCoordinator _snapshot;
     private readonly Storage _storage;
     private TcpListener? _listener;
+    private const int ActiveExpiryInterval = 100;
+    private int _commandsSinceExpiry;
 
     private readonly Channel<WorkItem> _workChannel = Channel.CreateUnbounded<WorkItem>(
         new UnboundedChannelOptions
@@ -148,6 +150,12 @@ public sealed class SingleThreadServer
                 else
                 {
                     byte[] response = _executor.Execute(item.Command);
+                    if (++_commandsSinceExpiry >= ActiveExpiryInterval)
+                    {
+                        _commandsSinceExpiry = 0;
+                        _executorImpl.RunActiveExpiry();
+                    }
+
                     item.Completion!.TrySetResult(response);
                 }
             }
