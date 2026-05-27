@@ -1,6 +1,6 @@
 # Redis Cluster Protocol (Phase 2)
 
-Hyperion implements a master-only subset of the Redis Cluster protocol, supporting dynamic hash slot distribution, live gossip-based node discovery, and MOVED redirection for clients.
+Hyperion implements a master-only subset of the Redis Cluster protocol, supporting dynamic hash slot distribution, live gossip-based node discovery, and MOVED redirection for clients. The implementation is intentionally partial: replicas, failover, and `CLUSTER SLOTS` are not implemented yet.
 
 ## Architecture
 
@@ -51,25 +51,28 @@ Every 1 second, the `GossipEngine`:
 - `CLUSTER INFO` - Returns cluster state, slot assignment stats, and epoch.
 - `CLUSTER NODES` - Returns the full node table in Redis-compatible format.
 - `CLUSTER MYID` - Returns the node's unique 40-character ID.
+- `CLUSTER DELSLOTS <slot> [slot ...]` - Removes slots currently assigned to this node.
 - `CLUSTER MEET <ip> <port>` - Initiates a handshake to join a new node into the cluster.
 - `CLUSTER ADDSLOTS <slot> [slot ...]` - Assigns specific hash slots to the node.
 - `CLUSTER KEYSLOT <key>` - Returns the CRC16 hash slot for a key (supports `{hash tags}`).
 - `CLUSTER SETSLOT <slot> <IMPORTING|MIGRATING|STABLE|NODE> [node-id]` - Changes the state of a hash slot for live migration.
-- `CLUSTER GETKEYSINSLOT <slot> <count>` - Returns an array of keys found in the specified slot.
-- `CLUSTER COUNTKEYSINSLOT <slot>` - Returns the number of keys mapping to the specified slot.
-- `MIGRATE <host> <port> <key> <db> <timeout>` - Atomically transfers a key from a source Redis instance to a destination instance.
+- `CLUSTER GETKEYSINSLOT <slot> <count>` - Returns keys found in the specified slot by routing directly to the Worker that owns the slot.
+- `CLUSTER COUNTKEYSINSLOT <slot>` - Returns the number of keys mapping to the specified slot by routing directly to the Worker that owns the slot.
+- `MIGRATE <host> <port> <key> <db> <timeout>` - Transfers string keys by sending a RESP `SET`/`SET PX` command to the destination and deleting the local key after success.
 - `ASKING` - Instructs the server to serve the next query even if it is not the authoritative owner of the slot (used during migrations).
+
+`CLUSTER SLOTS` currently returns an explicit "not implemented" error. `GETKEYSINSLOT` and `COUNTKEYSINSLOT` enumerate the local string keyspace in the owning Worker; unlike normal `KEYS`, they do not perform lazy expiry during the scan, so active expiry may need to run before an elapsed-TTL key disappears from those introspection commands.
 
 ## Live Slot Migration
 
-Hyperion supports zero-downtime live slot migration matching the Redis cluster specification. 
+Hyperion has the basic primitives for live slot migration, but it does not yet fully match Redis's migration behavior.
 
 1. **Source Node:** `CLUSTER SETSLOT <slot> MIGRATING <dest-node-id>`
 2. **Dest Node:** `CLUSTER SETSLOT <slot> IMPORTING <src-node-id>`
 3. **Execution:** Keys are pulled via `CLUSTER GETKEYSINSLOT` and pushed via `MIGRATE`.
 4. **Finalization:** Both nodes are sent `CLUSTER SETSLOT <slot> NODE <dest-node-id>`.
 
-During migration, if a client requests a key from the Source node that has already been migrated, the Source returns a `-ASK <port> <ip>` redirect. The client must then issue an `ASKING` command to the Destination node before re-issuing the query, telling the Destination node to execute the query despite not fully owning the slot yet.
+During migration, `ASKING` is tracked on the connection and lets an importing destination serve the next command. The source side does not currently check whether a missing key has already moved, so it does not yet emit Redis-compatible `-ASK` redirects for that missing-key case.
 
 ## State Persistence
 
@@ -86,9 +89,9 @@ Hyperion's cluster features a robust, two-phase distributed failure detection me
 ## Architectural Trade-offs & Self-Learning Notes
 
 1. **MIGRATE Command (Internal RESP vs Binary Serializer)**
-   - *Implementation:* When `MIGRATE` is executed, Hyperion encodes the key and value dynamically into standard RESP `SET PX` network commands, pushing them over a temporary TCP socket to the destination.
+   - *Implementation:* When `MIGRATE` is executed, Hyperion encodes string keys dynamically into standard RESP `SET` or `SET PX` network commands, pushing them over a temporary TCP socket to the destination.
    - *Trade-off:* We sacrifice a tiny bit of CPU efficiency (due to RESP string-formatting) compared to a proprietary binary stream transfer.
-   - *Learning:* This drastically simplified the implementation and kept it perfectly compliant with stock Redis clusters. The destination node doesn't need a special parsing channel—it re-uses the exact same robust `StringCommands.Set` logic it uses for normal clients.
+   - *Learning:* This drastically simplified the implementation and lets the destination re-use the exact same `StringCommands.Set` logic it uses for normal clients. Complex value types still need a proper serialized transfer format before migration can be considered complete.
 2. **Lock-Free GETKEYSINSLOT Routing**
    - *Implementation:* Unlike single-threaded Redis, Hyperion is multi-threaded. Finding keys in a slot could theoretically require taking a read-lock across all `Worker` thread shards. Instead, `CLUSTER GETKEYSINSLOT` is intercepted within the `HyperionServer` dispatcher and forcefully routed to the *exact* Worker thread that mathematically owns that CRC16 slot.
    - *Trade-off:* Requires intercepting commands at the parsing layer, tightly coupling `HyperionServer` to some cluster protocol commands.

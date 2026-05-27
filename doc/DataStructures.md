@@ -47,6 +47,7 @@ DictObject
 - **DEL** deletes the key from `_store` and `_expiryStore`. To keep `_keyList` packed without holes in $O(1)$ time complexity, we perform **Swap-and-Pop**: we swap the key-to-be-deleted with the *last* key in `_keyList`, update the index map of the swapped key, and then perform `RemoveAt(last_index)`. This avoids expensive $O(N)$ array-shifting.
 - **GET RANDOM KEY** retrieves a random key in $O(1)$ by picking a random index using `Random.Shared.Next(_keyList.Count)` and looking it up in `_keyList`.
 - **Expiry Check** (`HasExpired`): Before returning a value, we compare `CoarseClock.NowMs` against the stored expiry. If expired, the key is lazily deleted and `nil` is returned.
+- **KEYS scan** (`GetLiveKeys`): `KEYS <pattern>` scans a snapshot of `_keyList`, deletes expired keys encountered during the scan, and returns only live keys matching the glob pattern (`*`, `?`, and character classes).
 
 ### CoarseClock
 Instead of calling `DateTimeOffset.UtcNow` on every GET/SET (a syscall), Hyperion maintains a coarse clock refreshed by a background `Timer` every 10ms:
@@ -64,6 +65,15 @@ public static class CoarseClock
 ```
 
 Redis uses the same approach: `server.unixtime` is refreshed once per event-loop tick, not on every command.
+
+### Expiry Model
+Hyperion uses two expiry paths, matching the current code:
+
+1. **Lazy expiry on access**: `GET` and `TTL` call into `Dict` expiry checks. If the key has expired, it is deleted before the command returns.
+2. **Lazy expiry on scan**: `KEYS` uses `GetLiveKeys(pattern)`, which removes expired keys while scanning and never returns them to the client.
+3. **Active expiry in event loops**: both server modes periodically call `CommandExecutor.RunActiveExpiry()`. In multi-thread mode each `Worker` runs the sweep after every 100 processed commands for its own private shard. In single-thread mode `SingleThreadServer` runs the same sweep after every 100 processed commands on the single owner thread.
+
+`ActiveExpiry` samples keys from `_expiryStore` using `Constants.ActiveExpireSampleSize` and keeps looping while the expired ratio is above `Constants.ActiveExpireThreshold`. It runs inside the owning event loop, so it does not need locks.
 
 ### Why Plain Dictionary (Not ConcurrentDictionary)?
 Each `Worker` owns a **private** `Dict` instance. The routing layer (FNV-1a hash) guarantees that all accesses to a given key are dispatched to the same Worker thread — so no two threads ever access the same `Dict` concurrently. Using a plain `Dictionary` eliminates all lock overhead that `ConcurrentDictionary` would otherwise impose.
@@ -92,6 +102,8 @@ Our `Dict` mirrors this exact pattern — `_store` is the keyspace, `_expiryStor
 | GET | O(1) |
 | DEL | O(1) |
 | TTL check | O(1) |
+| KEYS scan | O(N) |
+| Active expiry sweep | O(sample count per loop) |
 
 ---
 

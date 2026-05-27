@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Hyperion.Protocol;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -138,6 +139,31 @@ public class MultiThreadIntegrationTests : IDisposable
 
         var delRes = SendCommand(new[] { "DEL", "{user:1}:name", "{user:1}:age" });
         Assert.Equal(":2\r\n", delRes);
+    }
+
+    [Fact]
+    public void Keys_ShouldReturnKeysFromAllWorkers()
+    {
+        var expected = new HashSet<string>();
+        for (int i = 0; i < 40; i++)
+        {
+            string key = $"mt:keys:{i}";
+            expected.Add(key);
+            var setRes = SendCommand(new[] { "SET", key, $"value-{i}" });
+            Assert.Equal("+OK\r\n", setRes);
+        }
+
+        var keysRes = SendCommand(new[] { "KEYS", "mt:keys:*" });
+        var actual = DecodeStringArray(keysRes);
+
+        Assert.Subset(expected, actual);
+    }
+
+    private static HashSet<string> DecodeStringArray(string response)
+    {
+        RespDecoder.Decode(Encoding.UTF8.GetBytes(response), out var result, out _);
+        var items = Assert.IsType<object[]>(result);
+        return items.Select(item => Assert.IsType<string>(item)).ToHashSet();
     }
 
     public void Dispose()

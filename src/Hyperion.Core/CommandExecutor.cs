@@ -185,6 +185,7 @@ public class CommandExecutor : ICommandExecutor
             "INFO"     => _stringCommands.Info(command.Args),
             "INCR"     => _stringCommands.Incr(command.Args),
             "DECR"     => _stringCommands.Decr(command.Args),
+            "KEYS"     => _stringCommands.Keys(command.Args),
             "SADD"     => _setCommands.Sadd(command.Args),
             "SMEMBERS" => _setCommands.Smembers(command.Args),
             "SISMEMBER"=> _setCommands.Sismember(command.Args),
@@ -329,7 +330,7 @@ public class CommandExecutor : ICommandExecutor
 
     private bool IsDataCommand(string cmd)
     {
-        return cmd != "PING" && cmd != "INFO" && cmd != "SAVE" && cmd != "BGSAVE" && cmd != "LASTSAVE" && cmd != "DBSIZE";
+        return cmd != "PING" && cmd != "INFO" && cmd != "SAVE" && cmd != "BGSAVE" && cmd != "LASTSAVE" && cmd != "DBSIZE" && cmd != "KEYS";
     }
 
     private bool IsKeyArg(string cmd, int argIndex)

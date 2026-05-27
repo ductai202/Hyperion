@@ -97,6 +97,14 @@ public class StringCommands
     public byte[] Incr(string[] args) => IncrBy(args, 1);
     public byte[] Decr(string[] args) => IncrBy(args, -1);
 
+    public byte[] Keys(string[] args)
+    {
+        if (args.Length != 1) return RespEncoder.Encode(new Exception("ERR wrong number of arguments for 'keys' command"));
+        string pattern = args[0];
+        var liveKeys = _storage.DictStore.GetLiveKeys(pattern);
+        return RespEncoder.Encode(liveKeys.ToArray());
+    }
+
     private byte[] IncrBy(string[] args, long delta)
     {
         if (args.Length != 1) return RespEncoder.Encode(new Exception($"ERR wrong number of arguments for command"));

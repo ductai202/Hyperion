@@ -29,7 +29,7 @@ For the algorithm breakdown, Redis equivalence, and complexity analysis of each 
 | Category | Commands |
 |---|---|
 | Connection | `PING`, `INFO` |
-| String | `SET`, `GET`, `DEL`, `TTL`, `INCR`, `DECR` |
+| String | `SET`, `GET`, `DEL`, `TTL`, `KEYS`, `INCR`, `DECR` |
 | Hash | `HSET`, `HGET`, `HDEL`, `HGETALL` |
 | List | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LRANGE` |
 | Set | `SADD`, `SREM`, `SISMEMBER`, `SMEMBERS` |
@@ -37,13 +37,13 @@ For the algorithm breakdown, Redis equivalence, and complexity analysis of each 
 | Bloom Filter | `BF.RESERVE`, `BF.MADD`, `BF.EXISTS` |
 | Count-Min Sketch | `CMS.INITBYDIM`, `CMS.INITBYPROB`, `CMS.INCRBY`, `CMS.QUERY` |
 | Persistence | `SAVE`, `BGSAVE`, `LASTSAVE`, `DBSIZE` |
-| Cluster | `CLUSTER INFO`, `CLUSTER NODES`, `CLUSTER MEET`, `CLUSTER ADDSLOTS`, `CLUSTER KEYSLOT`, `CLUSTER SETSLOT`, `CLUSTER GETKEYSINSLOT`, `CLUSTER COUNTKEYSINSLOT`, `MIGRATE`, `ASKING` |
+| Cluster | `CLUSTER INFO`, `CLUSTER NODES`, `CLUSTER MYID`, `CLUSTER MEET`, `CLUSTER ADDSLOTS`, `CLUSTER DELSLOTS`, `CLUSTER KEYSLOT`, `CLUSTER SETSLOT`, `CLUSTER GETKEYSINSLOT`, `CLUSTER COUNTKEYSINSLOT`, `MIGRATE`, `ASKING` |
 
 **Server modes:**
 - **Single-threaded** — Follows Redis's original event-loop architecture. One dedicated OS thread owns all command execution. Async IO handlers feed commands through a lock-free `Channel`. Responses are batched with `PipeWriter` — one flush per read batch.
 - **Multi-threaded (share-nothing)** — Inspired by [DragonflyDB](https://www.dragonflydb.io/). N worker threads each own a private storage shard. IO Handlers route commands via FNV-1a hash. No mutexes, no spinlocks, no contention on the hot path.
 
-**Key expiry** — Both lazy (check on access) and active (background sweep sampling and deleting expired keys).
+**Key expiry** — Both lazy (check on access/scan) and active (periodic sweep inside the single-thread event loop and each Worker event loop).
 
 **RDB Persistence** — Point-in-time binary snapshots compatible with both server modes:
 - Automatic saves via configurable policies (e.g. `save 300 100` — save after 5 min if ≥100 changes occurred)
@@ -55,11 +55,11 @@ For the algorithm breakdown, Redis equivalence, and complexity analysis of each 
 **Redis Cluster Protocol** — Master-only clustering with dynamic slot routing:
 - Full cluster bus binary protocol on port+10000 with gossip-based node discovery
 - `CRC16(key) % 16384` hashing with `{hash tag}` support for deterministic routing
-- Zero-downtime Live Slot Migration (`MIGRATE`, `CLUSTER SETSLOT`, `ASKING` support)
+- Basic live slot migration primitives (`MIGRATE`, `CLUSTER SETSLOT`, `ASKING` support)
 - Persistent topology state natively written and recovered via `nodes.conf`
-- Returns `-MOVED` and `-ASK` redirects for clients pointing to the wrong node
+- Returns `-MOVED` redirects; `ASKING` is supported for importing slots, while source-side `-ASK` redirects for migrated-away missing keys are still a gap
 - Built-in two-phase distributed failure detection (`PFAIL` → `FAIL` consensus)
-- Fully compatible with `redis-cli -c` and cluster-aware client libraries
+- Compatible with `redis-cli -c` for the implemented cluster subset; `CLUSTER SLOTS`, replicas, and failover are not implemented yet
 
 ---
 
@@ -83,6 +83,8 @@ flowchart LR
 
 #### 2. Execution Layer
 Each IO task parses complete RESP commands from its `PipeReader` and enqueues a `WorkItem` to a shared lock-free `Channel<WorkItem>`. A single dedicated OS thread (`LongRunning`) consumes the channel one item at a time and executes every command against the `CommandExecutor` — no synchronization needed because only this thread ever touches the data.
+
+The event loop also runs active expiry every 100 processed commands by calling `RunActiveExpiry()` before completing that command's response. This keeps expired keys from accumulating even when clients stop reading them.
 
 ```mermaid
 flowchart LR
@@ -163,6 +165,10 @@ flowchart TD
 ```
 
 **Multi-Key Commands — Scatter-Gather:** For commands like `DEL key1 key2` where keys map to different shards, `DispatchAsync` splits the command into per-shard sub-tasks, dispatches them all concurrently, then aggregates results — inspired by [Dragonfly's transaction model](https://www.dragonflydb.io/blog/transactions-in-dragonfly). **Hash Tags** (e.g. `{user:1}:name` and `{user:1}:age`) force related keys to the same shard to avoid cross-shard overhead entirely.
+
+**Cross-Shard Scan Commands:** `KEYS <pattern>` is dispatched to every Worker and the per-shard arrays are merged into one RESP array. Each shard filters out expired keys during the scan, so `KEYS` does not return keys whose TTL has already elapsed.
+
+Each Worker also runs active expiry every 100 processed commands inside its own event loop. The sweep is local to that Worker's private shard, so it preserves the share-nothing model and requires no locks.
 
 #### 3. Response Layer
 Same as single-thread: the `IOHandler` awaits all `TCS` results for the current read batch, writes them into a `PipeWriter` buffer, and flushes once.

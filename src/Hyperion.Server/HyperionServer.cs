@@ -5,9 +5,9 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Hyperion.Core;
-using Hyperion.Core;
 using Hyperion.Persistence;
 using Hyperion.Cluster;
+using Hyperion.Protocol;
 using Microsoft.Extensions.Logging;
 
 namespace Hyperion.Server;
@@ -177,6 +177,12 @@ public sealed class HyperionServer
     /// </summary>
     public async ValueTask DispatchAsync(WorkerTask task)
     {
+        if (task.Command.Cmd == "KEYS")
+        {
+            await DispatchKeysAsync(task);
+            return;
+        }
+
         // In cluster mode, multi-key commands must map to the same slot, which means they map to the same partition.
         // We let CommandExecutor handle the CROSSSLOT error if they don't.
         if (_clusterProvider == null && task.Command.Cmd == "DEL" && task.Command.Args.Length > 1)
@@ -252,6 +258,70 @@ public sealed class HyperionServer
                     : GetPartitionId(routingKey);
             }
             await _workers[workerId].EnqueueTaskAsync(task);
+        }
+    }
+
+    private async ValueTask DispatchKeysAsync(WorkerTask task)
+    {
+        if (task.Command.Args.Length != 1)
+        {
+            await _workers[0].EnqueueTaskAsync(task);
+            return;
+        }
+
+        var subTasks = new List<WorkerTask>(_numWorkers);
+        for (int i = 0; i < _numWorkers; i++)
+        {
+            var subCommand = new RespCommand
+            {
+                Cmd = task.Command.Cmd,
+                Args = task.Command.Args
+            };
+            var subTask = new WorkerTask(subCommand);
+            subTasks.Add(subTask);
+            await _workers[i].EnqueueTaskAsync(subTask);
+        }
+
+        _ = Task.Run(async () =>
+        {
+            var keys = new List<string>();
+            Exception? error = null;
+
+            foreach (var subTask in subTasks)
+            {
+                try
+                {
+                    var responseBytes = await subTask.ReplyCompletion.Task;
+                    keys.AddRange(DecodeStringArray(responseBytes));
+                }
+                catch (Exception ex)
+                {
+                    error = ex;
+                    break;
+                }
+            }
+
+            if (error != null)
+                task.ReplyCompletion.TrySetException(error);
+            else
+                task.ReplyCompletion.TrySetResult(RespEncoder.Encode(keys.ToArray()));
+        });
+    }
+
+    private static IEnumerable<string> DecodeStringArray(byte[] responseBytes)
+    {
+        RespDecoder.Decode(responseBytes, out var result, out _);
+        if (result is object[] items)
+        {
+            foreach (var item in items)
+            {
+                if (item is string key)
+                    yield return key;
+            }
+        }
+        else if (result is Exception ex)
+        {
+            throw ex;
         }
     }
 
